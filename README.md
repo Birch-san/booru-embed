@@ -44,22 +44,47 @@ SELECT * FROM danbooru1.danbooru_public.posts LIMIT 1
 ```
 
 We can export results to Google Drive as 1GB csvs.
-You can use `LIMIT` and `OFFSET` to request (for example) 2500000 records at a time: each csv will be about ~972MB.  
-There are currently ~5267057 Danbooru posts that satisfy this filter (i.e. non-explicit, non-banned):
+You can use `LIMIT` and `OFFSET` to request (for example) 2500000 records at a time: each csv will be about ~972MB.
 
 ```sql
-SELECT id, rating, score, tag_string_meta, tag_string_general, tag_string_artist, tag_string_copyright, tag_string_character FROM danbooru1.danbooru_public.posts WHERE is_deleted = false and is_banned = false AND rating IN ('g', 's', 'q') and is_flagged = false LIMIT 2500000 OFFSET 0
+SELECT id, rating, score, tag_string_meta, tag_string_general, tag_string_artist, tag_string_copyright, tag_string_character FROM danbooru1.danbooru_public.posts WHERE is_deleted = false and is_banned = false and is_flagged = false LIMIT 2500000 OFFSET 0
+```
+
+This should give you about 5770089 records. The csv will be formatted like this (note: empty string fields will be encoded as `""`):
+
+```
+id,rating,score,tag_string_meta,tag_string_general,tag_string_artist,tag_string_copyright,tag_string_character
+5730456,g,42,highres,1girl black_headwear black_jacket black_nails black_shorts brown_footwear brown_hair floating_hair flower grin hat hat_flower jacket kneehighs long_hair long_sleeves looking_at_viewer nail_polish one_eye_closed red_eyes red_flower shoes short_shorts shorts smile socks solo standing standing_on_one_leg thigh_gap twintails very_long_hair white_socks,goemon_cc2,genshin_impact,hu_tao_(genshin_impact)
 ```
 
 ## Analysing the input data
 
-First, let's convert csv to tsv:
+First, let's convert csv to tsv.
+
+### Converting to TSV
+
+You can use [csvkit](https://csvkit.readthedocs.io/en/latest/tutorial/1_getting_started.html#installing-csvkit)'s `csvformat -T` like so:
 
 ```bash
 head -n 2 bq-results-20230520-201605-1684613827694.csv | csvformat -T
 ```
 
+But a more performant program is [tsv-utils](https://github.com/eBay/tsv-utils)'s `csv2tsv`.
+
+```bash
+head -n 2 bq-results-20230520-201605-1684613827694.csv | csv2tsv
+```
+
 Then we can use awk to count tag occurrences, and print a sorted list.  
+
+### Counting word prevalance
+
+Modify the `*.csv` wildcard in `word-prevalence.sh` to be in the directory where you saved out Danbooru CSVs, then run:
+
+```bash
+./shell/word-prevalence.sh
+```
+
 We can work out what %ile we want to keep, based on how much vocab size it would cost.
 
 Might want to count each category of tag separately. Because an artist can be prolific and yet have fewer occurrences than an unremarkable general tag.
@@ -84,3 +109,12 @@ To grab random-ish records from it, you would:
 - discard bytes until see the record delimiter
 - read until you reach the desired number of records
   - if you reach the end of your page or of the file: seek to another random location and continue
+
+### The script for doing so
+
+```bash
+# practice run
+python -m script.tsv_tokenizer <(head -n 2 <(csv2tsv -H /Users/birch/machine-learning/danbooru-bigquery/bq-results-20230521-125535-1684673819225.csv))
+# full
+python -m script.tsv_tokenizer <(csv2tsv -H /Users/birch/machine-learning/danbooru-bigquery/*.csv)
+```
