@@ -12,7 +12,7 @@ awk -F'\t' 'NR > 1 {
     counts[meta[label_key]]++;
   for (label_key in general) {
     label = general[label_key];
-    if (length(label) > 4) {
+    if (length(label) <= 4) {
       counts[label]++;
     } else {
       rest = label;
