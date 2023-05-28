@@ -8,16 +8,16 @@ awk -F'\t' 'NR > 1 {
   split($6, artist, " ");
   split($7, copyright, " ");
   split($8, character, " ");
-  for (label in meta)
-    label_counts[meta[label]]++;
-  for (label in general)
-    label_counts[general[label]]++;
-  for (label in artist)
-    label_counts[artist[label]]++;
-  for (label in copyright)
-    label_counts[copyright[label]]++;
-  for (label in character)
-    label_counts[character[label]]++;
+  for (label_key in meta)
+    label_counts[meta[label_key]]++;
+  for (label_key in general)
+    label_counts[general[label_key]]++;
+  for (label_key in artist)
+    label_counts[artist[label_key]]++;
+  for (label_key in copyright)
+    label_counts[copyright[label_key]]++;
+  for (label_key in character)
+    label_counts[character[label_key]]++;
 }
 END {
   for (key in label_counts) {
