@@ -82,12 +82,18 @@ Then we can use awk to count tag occurrences, and print a sorted list.
 Modify the `*.csv` wildcard in `word-prevalence.sh` to be in the directory where you saved out Danbooru CSVs, then run:
 
 ```bash
-./shell/word-prevalence.sh
+./shell/split-word-prevalence.sh > out/split-word-prevalence.txt
 ```
 
 We can work out what %ile we want to keep, based on how much vocab size it would cost.
 
-Might want to count each category of tag separately. Because an artist can be prolific and yet have fewer occurrences than an unremarkable general tag.
+Might want to count each category of tag separately. Because an artist can be prolific and yet have fewer occurrences than an unremarkable general tag. Or maybe that's immaterial — if a token occurs too few times in the corpus, it's unlearnable.
+
+After we've produced and sorted the token counts, we can strip the counts like so:
+
+```bash
+cut -d' ' -f 2 out/split-word-prevalence.txt > out/split-word-prevalence.nocount.txt
+```
 
 Once we've decided on a vocab list, we can move to the next step:
 
