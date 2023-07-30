@@ -1,4 +1,6 @@
+__pycache__/
 /out/word-prevalence.txt
 /out/word-prevalence.nocount.txt
 /out/split-word-prevalence.txt
 /out/split-word-prevalence.nocount.txt
+/out_prevalence_category/*.txt
