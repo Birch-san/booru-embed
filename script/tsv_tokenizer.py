@@ -135,11 +135,11 @@ with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/dan
     id = int(id)
     rating: Rating = rating
     # fallback to UNK for unknown character may be fine because we can correlate character with copyright and hair colour
-    char_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in meta.split(' ') if tok in vocab.token_to_ix]
+    char_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in character.split(' ') if tok in vocab.token_to_ix]
     # fallback to UNK for copyright may be fine because we can correlate copyright with characters, or general labels
-    cpy_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in meta.split(' ') if tok in vocab.token_to_ix]
+    cpy_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in copyright.split(' ') if tok in vocab.token_to_ix]
     # fallback to UNK for artist is a bit tenuous, but at least helps create an at-least-one-artist pattern, to help predict end-of-artist section
-    art_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in meta.split(' ') if tok in vocab.token_to_ix]
+    art_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in artist.split(' ') if tok in vocab.token_to_ix]
     # probably not helpful to fallback to UNK for meta tokens, because they're not so correlated with other labels
     meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
     general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
