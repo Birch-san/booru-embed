@@ -1,10 +1,16 @@
 import fileinput
 from dataclasses import dataclass, field
-from typing import List, Literal, Dict, TypeAlias, Optional, Generator, Iterable, Iterator, TypeVar
+from typing import List, Literal, Dict, TypeAlias, Optional, Generator, Iterable, TypeVar
 from enum import Enum
 import re
 from re import Match
 import torch
+from torch import IntTensor, bucketize, tensor
+from contextlib import ExitStack
+from os import makedirs
+from os.path import join
+from webdataset import ShardWriter
+from tqdm import tqdm
 
 T = TypeVar('T')
 
@@ -22,9 +28,10 @@ class Vocab:
 vocab = Vocab()
 
 class SpecialToken(Enum):
+  # if PAD is the 0-token, it might be easier to eyeball where padding is
+  Pad = 'PAD'
   BOS = 'BOS'
   EOS = 'EOS'
-  Pad = 'PAD'
   Unknown = 'UNK'
   Mask = 'MASK'
   CopyrightStart = 'COPYRIGHT_START'
@@ -126,44 +133,75 @@ def intersperse_flatten(outer_it: Iterable[Iterable[T]], delimiter: T) -> Genera
     first_inner_it = False
     yield from inner_it
 
-bucket_sizes: List[int] = [14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238, 255]
+# determined via analysis of k-means (k=20) clusters over 5.7mill Danbooru captions
+# (note: these are *means*. I don't want to shed captions to go down to the closer bucket, so this isn't optimal)
+# TODO: is
+buckets: IntTensor = tensor([14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238, 255], dtype=torch.int32)
+max_tokens: int = buckets.max().item()
 
-with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv'), encoding='utf-8') as f:
-  # skip header line
-  next(f)
-  for line in f:
-    stripped: str = line.rstrip('\n')
-    tab_split: List[str] = stripped.split('\t')
-    id, rating, score, meta, general, artist, copyright, character = tab_split
-    id = int(id)
-    rating: Rating = rating
-    # fallback to UNK for unknown character may be fine because we can correlate character with copyright and hair colour
-    char_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in character.split(' ') if tok in vocab.token_to_ix]
-    # fallback to UNK for copyright may be fine because we can correlate copyright with characters, or general labels
-    cpy_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in copyright.split(' ') if tok in vocab.token_to_ix]
-    # fallback to UNK for artist is a bit tenuous, but at least helps create an at-least-one-artist pattern, to help predict end-of-artist section
-    art_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in artist.split(' ') if tok in vocab.token_to_ix]
-    # probably not helpful to fallback to UNK for meta tokens, because they're not so correlated with other labels
-    meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
-    general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
-    general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
+out_dir = '/home/birch/ml-data/booru-captions-out-lenbucket'
+makedirs(out_dir, exist_ok=True)
+bucket_dirnames: List[str] = [f'bucket_{bucket}' for bucket in buckets]
+bucket_dirs: List[str] = [join(out_dir, name) for name in bucket_dirnames]
+print(f"making bucket dirs under {out_dir}: {bucket_dirnames}")
+for bucket_dir in bucket_dirs:
+  makedirs(bucket_dir, exist_ok=True)
 
-    token_ixs: List[int] = [
-      bos_token_id,
-      rating_token_ids[rating],
-      char_token_id,
-      *char_token_ids,
-      cpy_token_id,
-      *cpy_token_ids,
-      art_token_id,
-      *art_token_ids,
-      gen_token_id,
-      *general_token_ids,
-      meta_token_id,
-      *meta_token_ids,
-      eos_token_id,
-    ]
-    # print([vocab.tokens[token_ix] for token_ix in token_ixs])
-    # TODO: shuffle
-    pass
-pass
+with ExitStack() as stack:
+  # TODO: for our fixed-length tensor data, it might be better to use a pandas dataframe than a webdataset
+  shard_writers: List[ShardWriter] = [
+    ShardWriter(join(bucket_out, '%05d.tar'),maxcount=10000) for bucket_out in bucket_dirs
+  ]
+  for mgr in shard_writers:
+    stack.enter_context(mgr)
+
+  with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv'), encoding='utf-8') as f:
+    # skip header line
+    next(f)
+    samples_estimate = 5770089
+    for line in tqdm(f, total=samples_estimate, unit=f'caption'):
+      stripped: str = line.rstrip('\n')
+      tab_split: List[str] = stripped.split('\t')
+      id, rating, score, meta, general, artist, copyright, character = tab_split
+      id = int(id)
+      rating: Rating = rating
+      # fallback to UNK for unknown character may be fine because we can correlate character with copyright and hair colour
+      char_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in character.split(' ') if tok in vocab.token_to_ix]
+      # fallback to UNK for copyright may be fine because we can correlate copyright with characters, or general labels
+      cpy_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in copyright.split(' ') if tok in vocab.token_to_ix]
+      # fallback to UNK for artist is a bit tenuous, but at least helps create an at-least-one-artist pattern, to help predict end-of-artist section
+      art_token_ids: List[int] = [vocab.token_to_ix.get(tok, unk_token_id) for tok in artist.split(' ') if tok in vocab.token_to_ix]
+      # probably not helpful to fallback to UNK for meta tokens, because they're not so correlated with other labels
+      meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
+      general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
+      general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
+
+      token_ixs: List[int] = [
+        bos_token_id,
+        rating_token_ids[rating],
+        char_token_id,
+        *char_token_ids,
+        cpy_token_id,
+        *cpy_token_ids,
+        art_token_id,
+        *art_token_ids,
+        gen_token_id,
+        *general_token_ids,
+        meta_token_id,
+        *meta_token_ids,
+        eos_token_id,
+      ]
+      # print([vocab.tokens[token_ix] for token_ix in token_ixs])
+
+      token_len: int = len(token_ixs)
+      if token_len > max_tokens:
+        # I mean we could drop labels to salvage it, but probably too many subjects are being portrayed to get a good embedding anyway
+        continue
+      # TODO: shuffle
+      # TODO: pad to bucket length
+
+      bucket_ix: int = bucketize(token_len, buckets).item()
+
+      sink: ShardWriter = shard_writers[bucket_ix]
+      pass
+  pass

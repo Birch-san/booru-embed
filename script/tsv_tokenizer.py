@@ -22,9 +22,9 @@ class Vocab:
 vocab = Vocab()
 
 class SpecialToken(Enum):
+  Pad = 'PAD'
   BOS = 'BOS'
   EOS = 'EOS'
-  Pad = 'PAD'
   Unknown = 'UNK'
   Mask = 'MASK'
   CopyrightStart = 'COPYRIGHT_START'
