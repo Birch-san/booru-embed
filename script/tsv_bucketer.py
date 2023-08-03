@@ -126,9 +126,6 @@ def intersperse_flatten(outer_it: Iterable[Iterable[T]], delimiter: T) -> Genera
     first_inner_it = False
     yield from inner_it
 
-caption_lengths: List[int] = []
-general_label_lengths: List[int] = [0]*100
-
 bucket_sizes: List[int] = [14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238, 255]
 
 with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv'), encoding='utf-8') as f:
@@ -149,8 +146,6 @@ with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/dan
     # probably not helpful to fallback to UNK for meta tokens, because they're not so correlated with other labels
     meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
     general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
-    for general_label in general_labels:
-      general_label_lengths[len(general_label)] += 1
     general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
 
     token_ixs: List[int] = [
@@ -169,10 +164,6 @@ with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/dan
       eos_token_id,
     ]
     # print([vocab.tokens[token_ix] for token_ix in token_ixs])
-    caption_lengths.append(len(token_ixs))
     # TODO: shuffle
     pass
-print(general_label_lengths)
-torch.save(torch.tensor(caption_lengths, dtype=torch.int32), 'out_analysis/caption_label_lengths.pt')
-torch.save(torch.tensor(general_label_lengths, dtype=torch.int32), 'out_analysis/general_label_lengths.pt')
 pass
