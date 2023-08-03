@@ -10,6 +10,13 @@
       "request": "launch",
       "module": "script.tsv_tokenizer",
       "justMyCode": true
+    },
+    {
+      "name": "Python: TSV Bucketer",
+      "type": "python",
+      "request": "launch",
+      "module": "script.tsv_bucketer",
+      "justMyCode": true
     }
   ]
 }
