@@ -30,10 +30,8 @@ vocab = Vocab()
 class SpecialToken(Enum):
   # if PAD is the 0-token, it might be easier to eyeball where padding is
   Pad = 'PAD'
-  BOS = 'BOS'
   EOS = 'EOS'
   Unknown = 'UNK'
-  Mask = 'MASK'
   CopyrightStart = 'COPYRIGHT_START'
   CharacterStart = 'CHARACTER_START'
   ArtistStart = 'ARTIST_START'
@@ -67,8 +65,8 @@ for category, min_prevalence in zip(
         break
       vocab.add_token(token)
 
+
 # micro-optimization to avoid dict lookup of tokens we'll be using often
-bos_token_id: int = vocab.token_to_ix[SpecialToken.BOS.value]
 eos_token_id: int = vocab.token_to_ix[SpecialToken.EOS.value]
 char_token_id: int = vocab.token_to_ix[SpecialToken.CharacterStart.value]
 cpy_token_id: int = vocab.token_to_ix[SpecialToken.CopyrightStart.value]
@@ -133,10 +131,17 @@ def intersperse_flatten(outer_it: Iterable[Iterable[T]], delimiter: T) -> Genera
     first_inner_it = False
     yield from inner_it
 
-# determined via analysis of k-means (k=20) clusters over 5.7mill Danbooru captions
-# (note: these are *means*. I don't want to shed captions to go down to the closer bucket, so this isn't optimal)
-# TODO: is
-buckets: IntTensor = tensor([14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238, 255], dtype=torch.int32)
+# determined via analysis of k-means (k=20) clusters over 5.7mill Danbooru captions.
+# *means* were:
+# [14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238]
+# we don't quite want means, because overflowing a bucket means shedding labels.
+# we don't know the variance around each mean to know a good upper bound for each bucket
+# so let's just go with the midpoint to the next bucket
+#   t = torch.tensor([14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238], dtype=torch.int32)
+#   t[:-1] + (t.diff()/2).int()
+# let's subtract 1 from all of those because I removed BOS from every prompt after computing these
+# let's also add a 255 bucket, for the upper bound we need to support to cover 99.75% of Danbooru 
+buckets: IntTensor = tensor([22, 41, 60, 78, 97, 116, 134, 153, 172, 190, 209, 228, 245, 255], dtype=torch.int32)
 max_tokens: int = buckets.max().item()
 
 out_dir = '/home/birch/ml-data/booru-captions-out-lenbucket'
@@ -177,7 +182,6 @@ with ExitStack() as stack:
       general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
 
       token_ixs: List[int] = [
-        bos_token_id,
         rating_token_ids[rating],
         char_token_id,
         *char_token_ids,
