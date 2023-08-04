@@ -29,9 +29,9 @@ vocab = Vocab()
 
 class SpecialToken(Enum):
   # if PAD is the 0-token, it might be easier to eyeball where padding is
-  Pad = 'PAD'
-  EOS = 'EOS'
-  Unknown = 'UNK'
+  Pad = '<pad>'
+  EOS = '</s>'
+  Unknown = '<unk>'
   CopyrightStart = 'COPYRIGHT_START'
   CharacterStart = 'CHARACTER_START'
   ArtistStart = 'ARTIST_START'
@@ -65,6 +65,11 @@ for category, min_prevalence in zip(
         break
       vocab.add_token(token)
 
+mask_token_count = 100
+for mask_token_ix in range(mask_token_count):
+  # start with 99, go down to 0 inclusive
+  decr_ix: int = (mask_token_count-1)-mask_token_ix
+  vocab.add_token(f'<extra_id_{mask_token_ix}>')
 
 # micro-optimization to avoid dict lookup of tokens we'll be using often
 eos_token_id: int = vocab.token_to_ix[SpecialToken.EOS.value]
