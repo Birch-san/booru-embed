@@ -9,9 +9,15 @@ from torch import IntTensor, bucketize, tensor
 from contextlib import ExitStack
 from os import makedirs
 from os.path import join
-from webdataset import ShardWriter
 from tqdm import tqdm
 from random import shuffle
+import pyarrow as pa
+from pyarrow.parquet import ParquetWriter
+import numpy as np
+
+schema = pa.schema([
+  ('input_ids', pa.int16()),
+])
 
 T = TypeVar('T')
 
@@ -71,6 +77,9 @@ for mask_token_ix in range(mask_token_count):
   # start with 99, go down to 0 inclusive
   decr_ix: int = (mask_token_count-1)-mask_token_ix
   vocab.add_token(f'<extra_id_{mask_token_ix}>')
+
+# check we're safe to save the dataset in int16
+assert len(vocab.tokens) < (1 << 15)
 
 # micro-optimization to avoid dict lookup of tokens we'll be using often
 eos_token_id: int = vocab.token_to_ix[SpecialToken.EOS.value]
@@ -153,22 +162,23 @@ max_tokens: int = buckets.max().item()
 # out_dir = '/home/birch/ml-data/booru-captions-out-lenbucket'
 out_dir = 'out_lenbucket'
 makedirs(out_dir, exist_ok=True)
-bucket_dirnames: List[str] = [f'bucket_{bucket}' for bucket in buckets]
-bucket_dirs: List[str] = [join(out_dir, name) for name in bucket_dirnames]
-print(f"making bucket dirs under {out_dir}: {bucket_dirnames}")
-for bucket_dir in bucket_dirs:
-  makedirs(bucket_dir, exist_ok=True)
+bucket_filenames: List[str] = [f'bucket_{bucket}.parquet' for bucket in buckets]
+bucket_paths: List[str] = [join(out_dir, fname) for fname in bucket_filenames]
+# bucket_dirnames: List[str] = [f'bucket_{bucket}' for bucket in buckets]
+# bucket_dirs: List[str] = [join(out_dir, name) for name in bucket_dirnames]
+# print(f"making bucket dirs under {out_dir}: {bucket_dirnames}")
+# for bucket_dir in bucket_dirs:
+#   makedirs(bucket_dir, exist_ok=True)
 
 def shuffle_(l: List[Any]) -> None:
   if len(l) >= 2:
     shuffle(l)
 
 with ExitStack() as stack:
-  # TODO: for our fixed-length tensor data, it might be better to use a pandas dataframe than a webdataset
-  shard_writers: List[ShardWriter] = [
-    ShardWriter(join(bucket_out, '%05d.tar'),maxcount=10000) for bucket_out in bucket_dirs
+  parquet_writers: List[ParquetWriter] = [
+    ParquetWriter(bucket_path, schema=schema) for bucket_path in bucket_paths
   ]
-  for mgr in shard_writers:
+  for mgr in parquet_writers:
     stack.enter_context(mgr)
 
   with fileinput.input(files=('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv'), encoding='utf-8') as f:
@@ -224,10 +234,11 @@ with ExitStack() as stack:
       # print([vocab.tokens[token_ix] for token_ix in token_ixs])
       assert len(token_ixs) == token_len
       
-      # TODO: pad to bucket length
-
       bucket_ix: int = bucketize(token_len, buckets).item()
 
-      sink: ShardWriter = shard_writers[bucket_ix]
+      sink: ParquetWriter = parquet_writers[bucket_ix]
+      arr = pa.array(np.array(token_ixs, np.int16), pa.int16(), mask=None, size=token_len)
+      table = pa.Table.from_arrays([arr], schema=schema)
+      sink.write_table(table)
       pass
   pass
