@@ -17,6 +17,13 @@
       "request": "launch",
       "module": "script.tsv_bucketer",
       "justMyCode": true
+    },
+    {
+      "name": "Python: Make tokenizer",
+      "type": "python",
+      "request": "launch",
+      "module": "script.make_tokenizer",
+      "justMyCode": true
     }
   ]
 }
