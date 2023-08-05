@@ -1,6 +1,6 @@
 import fileinput
 from dataclasses import dataclass, field
-from typing import List, Literal, Dict, TypeAlias, Optional, Generator, Iterable, TypeVar
+from typing import List, Literal, Dict, TypeAlias, Optional, Generator, Iterable, TypeVar, Any
 from enum import Enum
 import re
 from re import Match
@@ -11,6 +11,7 @@ from os import makedirs
 from os.path import join
 from webdataset import ShardWriter
 from tqdm import tqdm
+from random import shuffle
 
 T = TypeVar('T')
 
@@ -149,13 +150,18 @@ def intersperse_flatten(outer_it: Iterable[Iterable[T]], delimiter: T) -> Genera
 buckets: IntTensor = tensor([22, 41, 60, 78, 97, 116, 134, 153, 172, 190, 209, 228, 245, 255], dtype=torch.int32)
 max_tokens: int = buckets.max().item()
 
-out_dir = '/home/birch/ml-data/booru-captions-out-lenbucket'
+# out_dir = '/home/birch/ml-data/booru-captions-out-lenbucket'
+out_dir = 'out_lenbucket'
 makedirs(out_dir, exist_ok=True)
 bucket_dirnames: List[str] = [f'bucket_{bucket}' for bucket in buckets]
 bucket_dirs: List[str] = [join(out_dir, name) for name in bucket_dirnames]
 print(f"making bucket dirs under {out_dir}: {bucket_dirnames}")
 for bucket_dir in bucket_dirs:
   makedirs(bucket_dir, exist_ok=True)
+
+def shuffle_(l: List[Any]) -> None:
+  if len(l) >= 2:
+    shuffle(l)
 
 with ExitStack() as stack:
   # TODO: for our fixed-length tensor data, it might be better to use a pandas dataframe than a webdataset
@@ -184,7 +190,22 @@ with ExitStack() as stack:
       # probably not helpful to fallback to UNK for meta tokens, because they're not so correlated with other labels
       meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
       general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
+
+      general_token_ids_len: int = sum((len(x) for x in general_labels)) + len(general_labels)-1
+      # compute length first, as a fast-path to discard long prompts before we commit to the cost of shuffling
+      token_len: int = 7 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
+      if token_len > max_tokens:
+        # I mean we could drop labels to salvage it, but probably too many subjects are being portrayed to get a good embedding anyway
+        continue
+
+      shuffle_(char_token_ids)
+      shuffle_(cpy_token_ids)
+      shuffle_(art_token_ids)
+      shuffle_(general_labels)
+      shuffle_(meta_token_ids)
+
       general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
+      assert len(general_token_ids) == general_token_ids_len
 
       token_ixs: List[int] = [
         rating_token_ids[rating],
@@ -201,12 +222,8 @@ with ExitStack() as stack:
         eos_token_id,
       ]
       # print([vocab.tokens[token_ix] for token_ix in token_ixs])
-
-      token_len: int = len(token_ixs)
-      if token_len > max_tokens:
-        # I mean we could drop labels to salvage it, but probably too many subjects are being portrayed to get a good embedding anyway
-        continue
-      # TODO: shuffle
+      assert len(token_ixs) == token_len
+      
       # TODO: pad to bucket length
 
       bucket_ix: int = bucketize(token_len, buckets).item()
