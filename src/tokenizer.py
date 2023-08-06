@@ -5,7 +5,7 @@ from random import shuffle
 from .vocab import Vocab
 from .booru_special_tokens import Rating, SpecialToken, make_rating_token, ratings
 from .general_label_to_ids import GeneralLabelToIds, get_general_label_to_ids
-from .intersperse_flatten import intersperse_flatten
+from .bookend_flatten import bookend_flatten
 
 class TsvRecordToTokenIds(Protocol):
   def __call__(self, tabdelim: str) -> List[int]: ...
@@ -33,7 +33,7 @@ def make_tsv_record_to_token_ids(
   art_token_id: int = vocab.token_to_ix[SpecialToken.ArtistStart.value]
   meta_token_id: int = vocab.token_to_ix[SpecialToken.MetaStart.value]
   gen_token_id: int = vocab.token_to_ix[SpecialToken.GeneralStart.value]
-  comma_token_id: int = vocab.token_to_ix[SpecialToken.Comma.value]
+  comma_token_id: int = vocab.token_to_ix[SpecialToken.EndOfGeneralLabel.value]
 
   # micro-optimization to, uh, look up from a smaller dict (might use linear probing rather than hash?)
   rating_token_ids: Dict[Rating, int] = {
@@ -57,7 +57,7 @@ def make_tsv_record_to_token_ids(
     meta_token_ids: List[int] = [vocab.token_to_ix.get(tok) for tok in meta.split(' ') if tok in vocab.token_to_ix]
     general_labels: List[List[int]] = [general_label_to_ids(tok) for tok in general.split(' ')]
 
-    general_token_ids_len: int = sum((len(x) for x in general_labels)) + len(general_labels)-1
+    general_token_ids_len: int = sum((len(x) for x in general_labels)) + len(general_labels)
     # compute length first, as a fast-path to discard long prompts before we commit to the cost of shuffling
     token_len: int = 7 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
     if token_len > max_tokens:
@@ -71,7 +71,9 @@ def make_tsv_record_to_token_ids(
       shuffle_(general_labels)
       shuffle_(meta_token_ids)
 
-    general_token_ids: List[int] = list(intersperse_flatten(general_labels, comma_token_id))
+    # we don't use comma as a delimeter per se, but rather as an end-of-general-label token.
+    # hopefully with this plus the relative position embedding: model will be able to learn where general labels end.
+    general_token_ids: List[int] = list(bookend_flatten(general_labels, comma_token_id))
     assert len(general_token_ids) == general_token_ids_len
 
     token_ixs: List[int] = [

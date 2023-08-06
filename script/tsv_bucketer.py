@@ -33,9 +33,8 @@ assert len(vocab.tokens) < (1 << 15)
 # so let's just go with the midpoint to the next bucket
 #   t = torch.tensor([14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238], dtype=torch.int32)
 #   t[:-1] + (t.diff()/2).int()
-# let's subtract 1 from all of those because I removed BOS from every prompt after computing these
 # let's also add a 255 bucket, for the upper bound we need to support to cover 99.75% of Danbooru 
-buckets: IntTensor = tensor([22, 41, 60, 78, 97, 116, 134, 153, 172, 190, 209, 228, 245, 255], dtype=torch.int32)
+buckets: IntTensor = tensor([23, 42, 61, 79, 98, 117, 135, 154, 173, 191, 210, 229, 246, 255], dtype=torch.int32)
 max_tokens: int = buckets.max().item()
 
 tsv_record_to_token_ids: TsvRecordToTokenIds = make_tsv_record_to_token_ids(vocab, do_shuffle=True, max_tokens=max_tokens, statistics=None)

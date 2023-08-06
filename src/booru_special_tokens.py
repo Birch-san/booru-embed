@@ -11,7 +11,7 @@ class SpecialToken(Enum):
   ArtistStart = '<artist_start>'
   MetaStart = '<meta_start>'
   GeneralStart = '<general_start>'
-  Comma = ','
+  EndOfGeneralLabel = ','
   # our tokenizer has a special case for splitting _(cosplay) labels, so we want to guarantee its existence
   Cosplay = 'cosplay'
 
