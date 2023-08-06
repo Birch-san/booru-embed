@@ -1,12 +1,15 @@
 from dataclasses import dataclass, field
 from typing import Dict, List
 from io import TextIOWrapper
+from .map_except_first import map_except_first
 
 @dataclass
 class Vocab:
   token_to_ix: Dict[str, int] = field(default_factory=lambda:{})
   tokens: List[str] = field(default_factory=lambda:[])
   def add_token(self, token: str) -> int:
+    if not token:
+      raise ValueError('empty tokens are no bueno')
     if token in self.token_to_ix:
       return self.token_to_ix[token]
     token_ix: int = len(self.tokens)
@@ -20,7 +23,7 @@ class Vocab:
     with open('vocab.txt', mode='w', encoding='utf-8') as vocab_out:
       vocab.save(vocab_out)
     """
-    file.writelines(token + '\n' for token in self.tokens)
+    file.writelines(map_except_first(self.tokens, lambda token: '\n' + token))
   
   def load(self, file: TextIOWrapper) -> None:
     """
@@ -30,6 +33,5 @@ class Vocab:
     """
     for line in file:
       stripped: str = line.rstrip('\n')
-      if stripped:
-        self.add_token(stripped)
+      self.add_token(stripped)
 
