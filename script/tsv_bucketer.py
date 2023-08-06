@@ -27,14 +27,14 @@ assert len(vocab.tokens) < (1 << 15)
 
 # determined via analysis of k-means (k=20) clusters over 5.7mill Danbooru captions.
 # *means* were:
-# [14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238]
+# [17, 36, 55, 73, 92, 111, 129, 148, 167, 185, 204, 223, 241]
 # we don't quite want means, because overflowing a bucket means shedding labels.
 # we don't know the variance around each mean to know a good upper bound for each bucket
 # so let's just go with the midpoint to the next bucket
-#   t = torch.tensor([14, 33, 52, 70, 89, 108, 126, 145, 164, 182, 201, 220, 238], dtype=torch.int32)
+#   t = torch.tensor([17, 36, 55, 73, 92, 111, 129, 148, 167, 185, 204, 223, 241], dtype=torch.int32)
 #   t[:-1] + (t.diff()/2).int()
-# let's also add a 255 bucket, for the upper bound we need to support to cover 99.75% of Danbooru 
-buckets: IntTensor = tensor([23, 42, 61, 79, 98, 117, 135, 154, 173, 191, 210, 229, 246, 255], dtype=torch.int32)
+# let's round the final up to 255
+buckets: IntTensor = tensor([26,  45,  64,  82, 101, 120, 138, 157, 176, 194, 213, 232, 255], dtype=torch.int32)
 max_tokens: int = buckets.max().item()
 
 tsv_record_to_token_ids: TsvRecordToTokenIds = make_tsv_record_to_token_ids(vocab, do_shuffle=True, max_tokens=max_tokens, statistics=None)

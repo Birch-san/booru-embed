@@ -6,12 +6,13 @@ class SpecialToken(Enum):
   Pad = '<pad>'
   EOS = '</s>'
   Unknown = '<unk>'
+  ConvPad = '<cpad>'
   CopyrightStart = '<copyright_start>'
   CharacterStart = '<character_start>'
   ArtistStart = '<artist_start>'
   MetaStart = '<meta_start>'
   GeneralStart = '<general_start>'
-  EndOfGeneralLabel = ','
+  EdgeOfGeneralLabel = ','
   # our tokenizer has a special case for splitting _(cosplay) labels, so we want to guarantee its existence
   Cosplay = 'cosplay'
 
