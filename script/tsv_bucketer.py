@@ -83,9 +83,12 @@ for bucket, value_bucket, length_bucket in zip(buckets, value_buckets, length_bu
   # you can compute indices from lengths. faster way to do this is to roll + assign a 0, but:
   # indices: NDArray = np.pad(lengths, (1, 0)).cumsum()[:-1]
 
-  out_values: str = join(out_dir, f'b{bucket.item()}_values.npy')
-  # out_indices: str = join(out_dir, f'b{bucket.item()}_indices.npy')
-  out_lengths: str = join(out_dir, f'b{bucket.item()}_lengths.npy')
+  bucket_dir: str = join(out_dir, f'b{bucket.item()}')
+  makedirs(bucket_dir, exist_ok=True)
+
+  out_values: str = join(bucket_dir, 'values.npy')
+  # out_indices: str = join(bucket_dir, 'indices.npy')
+  out_lengths: str = join(bucket_dir, 'lengths.npy')
   
   np.save(out_values, values, allow_pickle=False)
   # np.save(out_indices, indices, allow_pickle=False)
