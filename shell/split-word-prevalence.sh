@@ -51,5 +51,5 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn
-# <(head -n 10 <(csv2tsv -H ~/machine-learning/danbooru-bigquery/bq-results-20230521-125535-1684673819225.csv)) | sort -n
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn
+# <(head -n 10 ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv) | sort -n

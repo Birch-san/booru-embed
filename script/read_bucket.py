@@ -38,4 +38,4 @@ for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
     caption: NDArray = values[index:index+length]
     print([vocab.tokens[token_ix] for token_ix in caption])
     pass
-  break # just peeking in first bucket for now
+  # break # just peeking in first bucket for now

@@ -40,9 +40,9 @@ value_buckets: List[List[NDArray]] = [[] for _ in buckets]
 length_buckets: List[List[int]] = [[] for _ in buckets]
 
 # this is just for testing
-target_count = 100
+# target_count = 100
 
-with open('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv', mode='r', encoding='utf-8') as f:
+with open('/Users/birch/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv', mode='r', encoding='utf-8') as f:
   # skip header line
   next(f)
   samples_estimate = 5770089
@@ -65,15 +65,16 @@ with open('/Users/birch/machine-learning/danbooru-bigquery/danbooru-captions.tsv
     # index_bucket.append(index_bucket[-1] + token_len)
     length_bucket.append(token_len)
 
-    target_count -= 1
-    if target_count == 0:
-      break
+    # target_count -= 1
+    # if target_count == 0:
+    #   break
     pass
 
 # for bucket, value_bucket, index_bucket in zip(buckets, value_buckets, index_buckets):
 for bucket, value_bucket, length_bucket in zip(buckets, value_buckets, length_buckets):
   if not value_bucket:
     continue
+  print(f'saving bucket {bucket.item()}..')
   # assert len(index_bucket)-1 == len(value_bucket)
   assert len(length_bucket) == len(value_bucket)
   values: NDArray = np.concatenate(value_bucket, axis=-1)

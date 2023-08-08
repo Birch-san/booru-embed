@@ -13,7 +13,7 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn > "$OUT_DIR/meta.txt"
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn > "$OUT_DIR/meta.txt"
 
 awk -F'\t' 'NR > 1 {
   split($6, artist, " ");
@@ -24,7 +24,7 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn > "$OUT_DIR/artist.txt"
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn > "$OUT_DIR/artist.txt"
 
 awk -F'\t' 'NR > 1 {
   split($7, copyright, " ");
@@ -35,7 +35,7 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn > "$OUT_DIR/copyright.txt"
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn > "$OUT_DIR/copyright.txt"
 
 awk -F'\t' 'NR > 1 {
   split($8, character, " ");
@@ -46,7 +46,7 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn > "$OUT_DIR/character.txt"
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn > "$OUT_DIR/character.txt"
 
 awk -F'\t' 'NR > 1 {
   split($5, general, " ");
@@ -85,4 +85,4 @@ END {
   for (key in counts) {
     print counts[key], key;
   }
-}' <(csv2tsv -H ~/machine-learning/danbooru-bigquery/*.csv) | sort -rn > "$OUT_DIR/general.txt"
+}' ~/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv | sort -rn > "$OUT_DIR/general.txt"

@@ -24,6 +24,13 @@
       "request": "launch",
       "module": "script.make_tokenizer",
       "justMyCode": true
+    },
+    {
+      "name": "Python: Read bucket",
+      "type": "python",
+      "request": "launch",
+      "module": "script.read_bucket",
+      "justMyCode": true
     }
   ]
 }
