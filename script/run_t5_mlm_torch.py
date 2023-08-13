@@ -845,17 +845,17 @@ def main():
     # shorter in multiprocess)
 
     # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / training_args.gradient_accumulation_steps)
     if training_args.max_train_steps is None:
-        training_args.max_train_steps = training_args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
+        max_train_steps: int = training_args.num_train_epochs * num_update_steps_per_epoch
+    else:
+        max_train_steps: int = training_args.max_train_steps
 
     lr_scheduler = get_scheduler(
         name=training_args.lr_scheduler_type,
         optimizer=optimizer,
         num_warmup_steps=training_args.num_warmup_steps * training_args.gradient_accumulation_steps,
-        num_training_steps=training_args.max_train_steps * training_args.gradient_accumulation_steps,
+        num_training_steps=max_train_steps * training_args.gradient_accumulation_steps,
     )
 
     # Prepare everything with our `accelerator`.
@@ -869,10 +869,10 @@ def main():
     
     # We need to recalculate our total training steps as the size of the training dataloader may have changed.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / training_args.gradient_accumulation_steps)
-    if overrode_max_train_steps:
-        training_args.max_train_steps = training_args.num_train_epochs * num_update_steps_per_epoch
+    if training_args.max_train_steps is None:
+        max_train_steps: int = training_args.num_train_epochs * num_update_steps_per_epoch
     # Afterwards we recalculate our number of training epochs
-    num_train_epochs: int = math.ceil(training_args.max_train_steps / num_update_steps_per_epoch)
+    num_train_epochs: int = math.ceil(max_train_steps / num_update_steps_per_epoch)
 
     # Figure out how many steps we should save the Accelerator states
     checkpointing_steps: Optional[str] = training_args.checkpointing_steps
@@ -908,7 +908,7 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {training_args.max_train_steps}")
 
-    progress_bar = tqdm(range(training_args.max_train_steps), disable=not accelerator.is_local_main_process)
+    progress_bar = tqdm(range(training_args.max_train_steps), desc=f"r{accelerator.process_index} max train steps", unit='batch', position=accelerator.process_index)
     completed_steps = 0
     starting_epoch = 0
 
@@ -945,111 +945,8 @@ def main():
     # update the progress_bar if load from checkpoint
     progress_bar.update(completed_steps)
 
-    num_of_hosts = jax.process_count()
-    current_host_idx = jax.process_index()
-
-    # Create learning rate schedule
-    warmup_fn = optax.linear_schedule(
-        init_value=0.0, end_value=training_args.learning_rate, transition_steps=training_args.warmup_steps
-    )
-    decay_fn = optax.linear_schedule(
-        init_value=training_args.learning_rate,
-        end_value=0,
-        transition_steps=num_train_steps - training_args.warmup_steps,
-    )
-    linear_decay_lr_schedule_fn = optax.join_schedules(
-        schedules=[warmup_fn, decay_fn], boundaries=[training_args.warmup_steps]
-    )
-
-    # We use Optax's "masking" functionality to not apply weight decay
-    # to bias and LayerNorm scale parameters. decay_mask_fn returns a
-    # mask boolean with the same structure as the parameters.
-    # The mask is True for parameters that should be decayed.
-    def decay_mask_fn(params):
-        flat_params = traverse_util.flatten_dict(params)
-        # find out all LayerNorm parameters
-        layer_norm_candidates = ["layernorm", "layer_norm", "ln"]
-        layer_norm_named_params = {
-            layer[-2:]
-            for layer_norm_name in layer_norm_candidates
-            for layer in flat_params.keys()
-            if layer_norm_name in "".join(layer).lower()
-        }
-        flat_mask = {path: (path[-1] != "bias" and path[-2:] not in layer_norm_named_params) for path in flat_params}
-        return traverse_util.unflatten_dict(flat_mask)
-
-    # create adam optimizer
-    if training_args.adafactor:
-        # We use the default parameters here to initialize adafactor,
-        # For more details about the parameters please check https://github.com/deepmind/optax/blob/ed02befef9bf81cbbf236be3d2b0e032e9ed4a40/optax/_src/alias.py#L74
-        optimizer = optax.adafactor(
-            learning_rate=linear_decay_lr_schedule_fn,
-        )
-    else:
-        optimizer = optax.adamw(
-            learning_rate=linear_decay_lr_schedule_fn,
-            b1=training_args.adam_beta1,
-            b2=training_args.adam_beta2,
-            weight_decay=training_args.weight_decay,
-            mask=decay_mask_fn,
-        )
-
-    # Setup train state
-    state = train_state.TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer)
-
-    # Define gradient update step fn
-    def train_step(state, batch, dropout_rng):
-        dropout_rng, new_dropout_rng = jax.random.split(dropout_rng)
-
-        def loss_fn(params):
-            labels = batch.pop("labels")
-
-            logits = state.apply_fn(**batch, params=params, dropout_rng=dropout_rng, train=True)[0]
-
-            # compute loss
-            loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1])).mean()
-
-            return loss
-
-        grad_fn = jax.value_and_grad(loss_fn)
-        loss, grad = grad_fn(state.params)
-        grad = jax.lax.pmean(grad, "batch")
-        new_state = state.apply_gradients(grads=grad)
-
-        metrics = jax.lax.pmean(
-            {"loss": loss, "learning_rate": linear_decay_lr_schedule_fn(state.step)}, axis_name="batch"
-        )
-
-        return new_state, metrics, new_dropout_rng
-
-    # Create parallel version of the train step
-    p_train_step = jax.pmap(train_step, "batch", donate_argnums=(0,))
-
-    # Define eval fn
-    def eval_step(params, batch):
-        labels = batch.pop("labels")
-
-        logits = model(**batch, params=params, train=False)[0]
-
-        # compute loss
-        loss = optax.softmax_cross_entropy(logits, onehot(labels, logits.shape[-1]))
-
-        # compute accuracy
-        accuracy = jnp.equal(jnp.argmax(logits, axis=-1), labels)
-
-        # summarize metrics
-        metrics = {"loss": loss.mean(), "accuracy": accuracy.mean()}
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
-
-        return metrics
-
-    p_eval_step = jax.pmap(eval_step, "batch", donate_argnums=(0,))
-
-    # Replicate the train state on each device
-    state = jax_utils.replicate(state)
-
     train_time = 0
-    for epoch in tqdm(range(starting_epoch, num_train_epochs), desc=f"r{accelerator.process_index} Epoch ... ", position=accelerator.process_index):
+    for epoch in tqdm(range(starting_epoch, num_train_epochs), desc=f"r{accelerator.process_index} train epoch", unit='epoch', position=accelerator.num_processes + accelerator.process_index):
         # ======================== Training ================================
         model.train()
         if training_args.with_tracking:
@@ -1063,47 +960,51 @@ def main():
         train_start = time.time()
         train_metrics = []
 
-        # Create sampling rng
-        rng, input_rng = jax.random.split(rng)
-
-        # Generate an epoch by shuffling sampling indices from the train dataset
-        num_train_samples = len(tokenized_datasets["train"])
-        # Avoid using jax.numpy here in case of TPU training
-        train_samples_idx = np.random.permutation(np.arange(num_train_samples))
-        train_batch_idx = generate_batch_splits(train_samples_idx, train_batch_size)
-
         # Gather the indexes for creating the batch and do a training step
-        for step, batch_idx in enumerate(tqdm(train_batch_idx, desc=f"r{accelerator.process_index} Training...", position=accelerator.num_processes + accelerator.process_index)):
-            samples = [tokenized_datasets["train"][int(idx)] for idx in batch_idx]
-            model_inputs = data_collator(samples)
+        for step, batch in enumerate(tqdm(active_dataloader, desc=f"r{accelerator.process_index} train step", unit='batch', position=2*accelerator.num_processes + accelerator.process_index)):
+            with accelerator.accumulate(model):
+                outputs = model(**batch)
+                # TODO: change the model such that it computes softmax cross entropy (over one-hot labels) like the flax t5 mlm trainer
+                # TODO: consider z_loss (if it can be made compatible with softmax cross entropy)
+                loss = outputs.loss
+                # We keep track of the loss at each epoch
+                if training_args.with_tracking:
+                    total_loss += loss.detach().float()
+                accelerator.backward(loss)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
-            local_host_model_inputs = {
-                key: np.split(model_inputs.data[key], num_of_hosts, axis=0)[current_host_idx]
-                for key, value in model_inputs.data.items()
-            }
+            # Checks if the accelerator has performed an optimization step behind the scenes
+            if accelerator.sync_gradients:
+                progress_bar.update(1)
+                completed_steps += 1
 
-            # Model forward
-            model_inputs = shard(local_host_model_inputs)
-            state, train_metric, dropout_rngs = p_train_step(state, model_inputs, dropout_rngs)
-            train_metrics.append(train_metric)
+            if isinstance(checkpointing_steps, int):
+                if completed_steps % checkpointing_steps == 0:
+                    output_dir = f"step_{completed_steps }"
+                    if training_args.output_dir is not None:
+                        output_dir = os.path.join(training_args.output_dir, output_dir)
+                    accelerator.save_state(output_dir)
 
-            cur_step = epoch * (num_train_samples // train_batch_size) + step
+            if completed_steps >= training_args.max_train_steps:
+                break
 
-            if cur_step % training_args.logging_steps == 0 and cur_step > 0:
+            if completed_steps % training_args.logging_steps == 0 and completed_steps > 0:
                 # Save metrics
                 train_metric = jax_utils.unreplicate(train_metric)
                 train_time += time.time() - train_start
                 if has_tensorboard and jax.process_index() == 0:
-                    write_train_metric(summary_writer, train_metrics, train_time, cur_step)
+                    write_train_metric(summary_writer, train_metrics, train_time, completed_steps)
 
                 epochs.write(
-                    f"Step... ({cur_step} | Loss: {train_metric['loss'].mean()}, Learning Rate:"
+                    f"Step... ({completed_steps} | Loss: {train_metric['loss'].mean()}, Learning Rate:"
                     f" {train_metric['learning_rate'].mean()})"
                 )
 
                 train_metrics = []
 
-            if cur_step % training_args.eval_steps == 0 and cur_step > 0:
+            if completed_steps % training_args.eval_steps == 0 and completed_steps > 0:
                 # ======================== Evaluating ==============================
                 num_eval_samples = len(tokenized_datasets["validation"])
                 # Avoid using jax.numpy here in case of TPU training
@@ -1126,15 +1027,15 @@ def main():
                 eval_metrics = jax.tree_util.tree_map(jnp.mean, eval_metrics)
 
                 # Update progress bar
-                epochs.write(f"Step... ({cur_step} | Loss: {eval_metrics['loss']}, Acc: {eval_metrics['accuracy']})")
+                epochs.write(f"Step... ({completed_steps} | Loss: {eval_metrics['loss']}, Acc: {eval_metrics['accuracy']})")
 
                 # Save metrics
-                if has_tensorboard and jax.process_index() == 0:
-                    write_eval_metric(summary_writer, eval_metrics, cur_step)
+                if has_tensorboard and accelerator.is_main_process:
+                    write_eval_metric(summary_writer, eval_metrics, completed_steps)
 
-            if cur_step % training_args.save_steps == 0 and cur_step > 0:
+            if completed_steps % training_args.save_steps == 0 and completed_steps > 0:
                 # save checkpoint after each epoch and push checkpoint to the hub
-                if jax.process_index() == 0:
+                if accelerator.is_main_process:
                     params = jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state.params))
                     model.save_pretrained(training_args.output_dir, params=params)
                     tokenizer.save_pretrained(training_args.output_dir)
