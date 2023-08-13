@@ -39,7 +39,7 @@
       "program": "script/run_t5_mlm_flax.py",
       "justMyCode": false,
       "args": [
-        "--output_dir", "./out-t5",
+        "--output_dir", "./out-t5-mlm-flax",
         "--model_type", "t5",
         "--config_name", "google/t5-v1_1-small",
         "--tokenizer_name", "google/t5-v1_1-small",
@@ -68,7 +68,7 @@
       "module": "script.run_t5_mlm_torch",
       "justMyCode": false,
       "args": [
-        "--output_dir", "./out-t5",
+        "--output_dir", "./out-t5-mlm-torch",
         "--model_type", "t5",
         "--config_name", "google/t5-v1_1-small",
         "--tokenizer_name", "google/t5-v1_1-small",
@@ -88,6 +88,25 @@
         "--save_steps", "10000",
         "--eval_steps", "2500",
         // "--push_to_hub"
+      ]
+    },
+    {
+      "name": "Python: MLM Torch",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_mlm_torch",
+      "justMyCode": false,
+      "args": [
+        "--model_name_or_path", "roberta-base",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        // "--dataset_name", "wikitext",
+        // "--dataset_config_name", "wikitext-2-raw-v1",
+        "--per_device_train_batch_size", "8",
+        "--per_device_eval_batch_size", "8",
+        "--do_train",
+        // "--do_eval",
+        "--output_dir", "./out-mlm-torch",
+        "--overwrite_output_dir",
       ]
     }
   ]

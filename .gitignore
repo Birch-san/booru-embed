@@ -5,4 +5,6 @@ __pycache__/
 /out/split-word-prevalence.nocount.txt
 /out_prevalence_category/*.txt
 /out_lenbucket/
-/out-t5/
+/out-t5-mlm-flax/
+/out-t5-mlm-torch/
+/out-mlm-torch/
