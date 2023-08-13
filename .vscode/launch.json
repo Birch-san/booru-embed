@@ -36,15 +36,59 @@
       "name": "Python: T5 MLM Flax",
       "type": "python",
       "request": "launch",
-      "module": "script.run_t5_mlm_flax",
-      "justMyCode": false
+      "program": "script/run_t5_mlm_flax.py",
+      "justMyCode": false,
+      "args": [
+        "--output_dir", "./out-t5",
+        "--model_type", "t5",
+        "--config_name", "google/t5-v1_1-small",
+        "--tokenizer_name", "google/t5-v1_1-small",
+        "--use_fast_tokenizer", "True",
+        // "--dataset_name", "oscar",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        // "--dataset_config_name", "unshuffled_deduplicated_en",
+        "--max_seq_length", "512",
+        "--per_device_train_batch_size", "32",
+        "--per_device_eval_batch_size", "32",
+        "--adafactor",
+        "--learning_rate", "0.005",
+        "--weight_decay", "0.001",
+        "--warmup_steps", "2000",
+        "--overwrite_output_dir",
+        "--logging_steps", "500",
+        "--save_steps", "10000",
+        "--eval_steps", "2500",
+        // "--push_to_hub"
+      ]
     },
     {
       "name": "Python: T5 MLM Torch",
       "type": "python",
       "request": "launch",
       "module": "script.run_t5_mlm_torch",
-      "justMyCode": false
+      "justMyCode": false,
+      "args": [
+        "--output_dir", "./out-t5",
+        "--model_type", "t5",
+        "--config_name", "google/t5-v1_1-small",
+        "--tokenizer_name", "google/t5-v1_1-small",
+        "--use_fast_tokenizer", "True",
+        // "--dataset_name", "oscar",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        // "--dataset_config_name", "unshuffled_deduplicated_en",
+        "--max_seq_length", "512",
+        "--per_device_train_batch_size", "32",
+        "--per_device_eval_batch_size", "32",
+        "--adafactor",
+        "--learning_rate", "0.005",
+        "--weight_decay", "0.001",
+        "--warmup_steps", "2000",
+        "--overwrite_output_dir",
+        "--logging_steps", "500",
+        "--save_steps", "10000",
+        "--eval_steps", "2500",
+        // "--push_to_hub"
+      ]
     }
   ]
 }

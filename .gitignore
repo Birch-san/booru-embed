@@ -5,3 +5,4 @@ __pycache__/
 /out/split-word-prevalence.nocount.txt
 /out_prevalence_category/*.txt
 /out_lenbucket/
+/out-t5/

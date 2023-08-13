@@ -7,3 +7,6 @@ jax>=0.2.8
 jaxlib>=0.1.59
 flax>=0.3.5
 optax>=0.0.9
+sentencepiece
+tensorboard
+# pip install --upgrade "jax[cuda12_pip]" -f https://storage.googleapis.com/jax-releases/jax_cuda_releases.html
