@@ -31,6 +31,20 @@
       "request": "launch",
       "module": "script.read_bucket",
       "justMyCode": true
+    },
+    {
+      "name": "Python: T5 MLM Flax",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_flax",
+      "justMyCode": false
+    },
+    {
+      "name": "Python: T5 MLM Torch",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_torch",
+      "justMyCode": false
     }
   ]
 }
