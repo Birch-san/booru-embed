@@ -36,7 +36,7 @@
       "name": "Python: T5 MLM Flax",
       "type": "python",
       "request": "launch",
-      "program": "script/run_t5_mlm_flax.py",
+      "module": "script.run_t5_mlm_flax",
       "justMyCode": false,
       "args": [
         "--output_dir", "./out-t5-mlm-flax",
@@ -95,6 +95,25 @@
       "type": "python",
       "request": "launch",
       "module": "script.run_mlm_torch",
+      "justMyCode": false,
+      "args": [
+        "--model_name_or_path", "roberta-base",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        // "--dataset_name", "wikitext",
+        // "--dataset_config_name", "wikitext-2-raw-v1",
+        "--per_device_train_batch_size", "8",
+        "--per_device_eval_batch_size", "8",
+        "--do_train",
+        // "--do_eval",
+        "--output_dir", "./out-mlm-torch",
+        "--overwrite_output_dir",
+      ]
+    },
+    {
+      "name": "Python: MLM Torch (no trainer)",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_mlm_torch_no_trainer",
       "justMyCode": false,
       "args": [
         "--model_name_or_path", "roberta-base",
