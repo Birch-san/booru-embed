@@ -53,7 +53,9 @@ from transformers import (
     T5ForConditionalGeneration,
     HfArgumentParser,
     PreTrainedTokenizerBase,
+    SchedulerType,
     T5Config,
+    get_scheduler,
     is_tensorboard_available,
 )
 from transformers.models.auto.auto_factory import _LazyAutoMapping
@@ -64,6 +66,7 @@ import transformers
 import datasets
 
 import torch
+from torch.utils.data import DataLoader
 from accelerate import Accelerator, DistributedType
 from accelerate.utils import set_seed
 
@@ -123,6 +126,8 @@ class TrainingArguments:
     with_tracking: bool = field(default=False, metadata={"help": "Whether to enable experiment trackers for logging."})
     report_to: str = field(default='all', metadata={"help": 'The integration to report the results and logs to. Supported platforms are `"tensorboard"`, `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. Only applicable when `--with_tracking` is passed.'})
     num_train_epochs: float = field(default=3.0, metadata={"help": "Total number of training epochs to perform."})
+    max_train_steps: int = field(default=None, metadata={"help": "Total number of training steps to perform. If provided, overrides num_train_epochs."})
+    lr_scheduler_type: SchedulerType = field(default=SchedulerType.LINEAR.value, metadata={"help": "The scheduler type to use.", "choices": [e.value for e in SchedulerType]})
     warmup_steps: int = field(default=0, metadata={"help": "Linear warmup over warmup_steps."})
     logging_steps: int = field(default=500, metadata={"help": "Log every X updates steps."})
     save_steps: int = field(default=500, metadata={"help": "Save checkpoint every X updates steps."})
@@ -621,31 +626,12 @@ def main():
     #
     # For CSV/JSON files, this script will use the column called 'text' or the first column if no column called
     # 'text' is found. You can easily tweak this behavior (see below).
-    if data_args.dataset_name is not None:
-        # Downloading and loading a dataset from the hub.
-        dataset = load_dataset(
-            data_args.dataset_name,
-            data_args.dataset_config_name,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-        )
-
-        if "validation" not in dataset.keys():
-            dataset["validation"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-            )
-            dataset["train"] = load_dataset(
-                data_args.dataset_name,
-                data_args.dataset_config_name,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-            )
-    else:
+    load_dataset_args = []
+    load_dataset_kwargs: Dict[str, Any] = {
+        'cache_dir': model_args.cache_dir,
+        'token': model_args.token,
+    }
+    if data_args.dataset_name is None:
         data_files = {}
         if data_args.train_file is not None:
             data_files["train"] = data_args.train_file
@@ -654,28 +640,30 @@ def main():
         extension = data_args.train_file.split(".")[-1]
         if extension == "txt":
             extension = "text"
-        dataset = load_dataset(
-            extension,
-            data_files=data_files,
-            cache_dir=model_args.cache_dir,
-            token=model_args.token,
-        )
+        load_dataset_args = [extension]
+        load_dataset_kwargs['data_files'] = data_files
+    else:
+        # Downloading and loading a dataset from the hub.
+        load_dataset_args = [
+            data_args.dataset_name,
+            data_args.dataset_config_name,
+        ]
+    dataset = load_dataset(
+        *load_dataset_args,
+        **load_dataset_kwargs,
+    )
 
-        if "validation" not in dataset.keys():
-            dataset["validation"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[:{data_args.validation_split_percentage}%]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-            )
-            dataset["train"] = load_dataset(
-                extension,
-                data_files=data_files,
-                split=f"train[{data_args.validation_split_percentage}%:]",
-                cache_dir=model_args.cache_dir,
-                token=model_args.token,
-            )
+    if "validation" not in dataset.keys():
+        dataset["validation"] = load_dataset(
+            *load_dataset_args,
+            split=f"train[:{data_args.validation_split_percentage}%]",
+            **load_dataset_kwargs,
+        )
+        dataset["train"] = load_dataset(
+            *load_dataset_args,
+            split=f"train[{data_args.validation_split_percentage}%:]",
+            **load_dataset_kwargs,
+        )
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -828,6 +816,47 @@ def main():
         target_length=targets_length,
         pad_token_id=model.config.pad_token_id,
         decoder_start_token_id=model.config.decoder_start_token_id,
+    )
+    train_dataloader = DataLoader(
+        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
+    )
+    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
+
+    # Optimizer
+    # Split weights in two groups, one with weight decay and the other not.
+    no_decay = ["bias", "LayerNorm.weight"]
+    optimizer_grouped_parameters = [
+        {
+            "params": [p for n, p in model.named_parameters() if not any(nd in n for nd in no_decay)],
+            "weight_decay": training_args.weight_decay,
+        },
+        {
+            "params": [p for n, p in model.named_parameters() if any(nd in n for nd in no_decay)],
+            "weight_decay": 0.0,
+        },
+    ]
+    optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=training_args.learning_rate)
+
+    # Note -> the training dataloader needs to be prepared before we grab his length below (cause its length will be
+    # shorter in multiprocess)
+
+    # Scheduler and math around the number of training steps.
+    overrode_max_train_steps = False
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / training_args.gradient_accumulation_steps)
+    if training_args.max_train_steps is None:
+        training_args.max_train_steps = training_args.num_train_epochs * num_update_steps_per_epoch
+        overrode_max_train_steps = True
+
+    lr_scheduler = get_scheduler(
+        name=training_args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=training_args.num_warmup_steps * training_args.gradient_accumulation_steps,
+        num_training_steps=training_args.max_train_steps * training_args.gradient_accumulation_steps,
+    )
+
+    # Prepare everything with our `accelerator`.
+    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
 
     # Store some constant
