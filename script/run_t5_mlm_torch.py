@@ -123,6 +123,7 @@ class TrainingArguments:
     adam_epsilon: float = field(default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."})
     adafactor: bool = field(default=False, metadata={"help": "Whether or not to replace AdamW by Adafactor."})
     resume_from_checkpoint: str = field(default=None, metadata={"help": "If the training should continue from a checkpoint folder."})
+    checkpointing_steps: str = field(default=None, metadata={"help": "Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch."})
     with_tracking: bool = field(default=False, metadata={"help": "Whether to enable experiment trackers for logging."})
     report_to: str = field(default='all', metadata={"help": 'The integration to report the results and logs to. Supported platforms are `"tensorboard"`, `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. Only applicable when `--with_tracking` is passed.'})
     num_train_epochs: float = field(default=3.0, metadata={"help": "Total number of training epochs to perform."})
@@ -648,6 +649,7 @@ def main():
             data_args.dataset_name,
             data_args.dataset_config_name,
         ]
+
     dataset = load_dataset(
         *load_dataset_args,
         **load_dataset_kwargs,
@@ -666,6 +668,11 @@ def main():
         )
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
+
+    train_dataloader = DataLoader(
+        dataset["train"], shuffle=True, collate_fn=data_collator, batch_size=training_args.per_device_train_batch_size
+    )
+    eval_dataloader = DataLoader(dataset["validation"], collate_fn=data_collator, batch_size=training_args.per_device_eval_batch_size)
 
     # Load pretrained model and tokenizer
 
@@ -817,10 +824,6 @@ def main():
         pad_token_id=model.config.pad_token_id,
         decoder_start_token_id=model.config.decoder_start_token_id,
     )
-    train_dataloader = DataLoader(
-        train_dataset, shuffle=True, collate_fn=data_collator, batch_size=args.per_device_train_batch_size
-    )
-    eval_dataloader = DataLoader(eval_dataset, collate_fn=data_collator, batch_size=args.per_device_eval_batch_size)
 
     # Optimizer
     # Split weights in two groups, one with weight decay and the other not.
@@ -859,13 +862,53 @@ def main():
         model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
     )
 
+    # On TPU, the tie weights in our model have been disconnected, so we need to restore the ties.
+    if accelerator.distributed_type == DistributedType.TPU:
+        model.tie_weights()
+    
+    # We need to recalculate our total training steps as the size of the training dataloader may have changed.
+    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / training_args.gradient_accumulation_steps)
+    if overrode_max_train_steps:
+        training_args.max_train_steps = training_args.num_train_epochs * num_update_steps_per_epoch
+    # Afterwards we recalculate our number of training epochs
+    num_train_epochs: int = math.ceil(training_args.max_train_steps / num_update_steps_per_epoch)
+
+    # Figure out how many steps we should save the Accelerator states
+    checkpointing_steps: Optional[str] = training_args.checkpointing_steps
+    if checkpointing_steps is not None and checkpointing_steps.isdigit():
+        checkpointing_steps = int(checkpointing_steps)
+
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if training_args.with_tracking:
+        experiment_config: Dict[str, Any] = {
+            **vars(model_args),
+            **vars(data_args),
+            **vars(training_args),
+        }
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
+        accelerator.init_trackers("mlm_no_trainer", experiment_config)
+
     # Store some constant
-    num_epochs = int(training_args.num_train_epochs)
+    effective_train_batch_size: int = training_args.per_device_train_batch_size * accelerator.num_processes * training_args.gradient_accumulation_steps
+
     train_batch_size = int(training_args.per_device_train_batch_size) * jax.device_count()
     per_device_eval_batch_size = int(training_args.per_device_eval_batch_size)
     eval_batch_size = per_device_eval_batch_size * jax.device_count()
 
-    num_train_steps = len(tokenized_datasets["train"]) // train_batch_size * num_epochs
+    num_train_steps = len(tokenized_datasets["train"]) // train_batch_size * num_train_epochs
+
+    logger.info("***** Running training *****")
+    logger.info(f"  Num train examples = {len(dataset['train'])}")
+    logger.info(f"  Num Epochs = {num_train_epochs}")
+    logger.info(f"  Instantaneous batch size per device = {training_args.per_device_train_batch_size}")
+    logger.info(f"  Total train batch size (w. parallel, distributed & accumulation) = {effective_train_batch_size}")
+    logger.info(f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}")
+    logger.info(f"  Total optimization steps = {training_args.max_train_steps}")
+
+    completed_steps = 0
+    starting_epoch = 0
 
     num_of_hosts = jax.process_count()
     current_host_idx = jax.process_index()
@@ -915,14 +958,6 @@ def main():
             weight_decay=training_args.weight_decay,
             mask=decay_mask_fn,
         )
-
-    # We need to initialize the trackers we use, and also store our configuration.
-    # The trackers initializes automatically on the main process.
-    if training_args.with_tracking:
-        experiment_config = vars(args)
-        # TensorBoard cannot log Enums, need the raw value
-        experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
-        accelerator.init_trackers("mlm_no_trainer", experiment_config)
 
     # Setup train state
     state = train_state.TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer)
@@ -979,7 +1014,7 @@ def main():
     state = jax_utils.replicate(state)
 
     train_time = 0
-    epochs = tqdm(range(starting_epoch, training_args.num_train_epochs), desc="Epoch ... ", position=0)
+    epochs = tqdm(range(starting_epoch, num_train_epochs), desc=f"r{accelerator.process_index} Epoch ... ", position=accelerator.process_index)
     for epoch in epochs:
         # ======================== Training ================================
         model.train()
@@ -1004,7 +1039,7 @@ def main():
         train_batch_idx = generate_batch_splits(train_samples_idx, train_batch_size)
 
         # Gather the indexes for creating the batch and do a training step
-        for step, batch_idx in enumerate(tqdm(train_batch_idx, desc="Training...", position=1)):
+        for step, batch_idx in enumerate(tqdm(train_batch_idx, desc=f"r{accelerator.process_index} Training...", position=accelerator.num_processes + accelerator.process_index)):
             samples = [tokenized_datasets["train"][int(idx)] for idx in batch_idx]
             model_inputs = data_collator(samples)
 
