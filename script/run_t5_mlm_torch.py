@@ -55,7 +55,6 @@ from transformers import (
     PreTrainedTokenizerBase,
     T5Config,
     is_tensorboard_available,
-    set_seed,
 )
 from transformers.models.auto.auto_factory import _LazyAutoMapping
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
@@ -66,6 +65,7 @@ import datasets
 
 import torch
 from accelerate import Accelerator, DistributedType
+from accelerate.utils import set_seed
 
 MODEL_FOR_MASKED_LM_MAPPING_NAMES = OrderedDict(
     [
@@ -576,6 +576,10 @@ def main():
         level=logging.INFO,
         datefmt="[%X]",
     )
+
+    # Log on each process the small summary:
+    logger = logging.getLogger(__name__)
+
     logger.info(accelerator.state, main_process_only=False)
     if accelerator.is_local_main_process:
         datasets.utils.logging.set_verbosity_warning()
@@ -584,14 +588,12 @@ def main():
         datasets.utils.logging.set_verbosity_error()
         transformers.utils.logging.set_verbosity_error()
 
-    # Log on each process the small summary:
-    logger = logging.getLogger(__name__)
-
     # Set the verbosity to info of the Transformers logger (on main process only):
     logger.info(f"Training/evaluation parameters {training_args}")
 
-    # Set seed before initializing model.
-    set_seed(training_args.seed)
+    # If passed along, set the training seed now.
+    if training_args.seed is not None:
+        set_seed(training_args.seed)
 
     # Handle the repository creation
     if training_args.push_to_hub:
@@ -603,6 +605,15 @@ def main():
         repo_id = create_repo(repo_name, exist_ok=True, token=training_args.hub_token).repo_id
         # Clone repo locally
         repo = Repository(training_args.output_dir, clone_from=repo_id, token=training_args.hub_token)
+
+        with open(os.path.join(training_args.output_dir, ".gitignore"), "w+") as gitignore:
+            if "step_*" not in gitignore:
+                gitignore.write("step_*\n")
+            if "epoch_*" not in gitignore:
+                gitignore.write("epoch_*\n")
+    elif training_args.output_dir is not None:
+        os.makedirs(training_args.output_dir, exist_ok=True)
+    accelerator.wait_for_everyone()
 
     # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
     # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
