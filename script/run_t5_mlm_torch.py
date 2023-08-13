@@ -32,9 +32,8 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from itertools import chain
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, OrderedDict, Any
 
-import flax
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -49,21 +48,45 @@ from tqdm import tqdm
 
 from transformers import (
     CONFIG_MAPPING,
-    FLAX_MODEL_FOR_MASKED_LM_MAPPING,
     AutoTokenizer,
     BatchEncoding,
-    FlaxT5ForConditionalGeneration,
+    T5ForConditionalGeneration,
     HfArgumentParser,
     PreTrainedTokenizerBase,
     T5Config,
     is_tensorboard_available,
     set_seed,
 )
+from transformers.models.auto.auto_factory import _LazyAutoMapping
+from transformers.models.auto.configuration_auto import CONFIG_MAPPING_NAMES
 from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
 from transformers.utils import send_example_telemetry
+import transformers
+import datasets
 
+import torch
+from accelerate import Accelerator, DistributedType
 
-MODEL_CONFIG_CLASSES = list(FLAX_MODEL_FOR_MASKED_LM_MAPPING.keys())
+MODEL_FOR_MASKED_LM_MAPPING_NAMES = OrderedDict(
+    [
+        # Model for Masked LM mapping
+        ("albert", "AlbertForMaskedLM"),
+        ("bart", "BartForConditionalGeneration"),
+        ("bert", "BertForMaskedLM"),
+        ("big_bird", "BigBirdForMaskedLM"),
+        ("distilbert", "DistilBertForMaskedLM"),
+        ("electra", "ElectraForMaskedLM"),
+        ("mbart", "MBartForConditionalGeneration"),
+        ("roberta", "RobertaForMaskedLM"),
+        ("roberta-prelayernorm", "RobertaPreLayerNormForMaskedLM"),
+        ("roformer", "RoFormerForMaskedLM"),
+        ("t5", "T5ForConditionalGeneration"),
+        ("xlm-roberta", "XLMRobertaForMaskedLM"),
+    ]
+)
+MODEL_FOR_MASKED_LM_MAPPING = _LazyAutoMapping(CONFIG_MAPPING_NAMES, MODEL_FOR_MASKED_LM_MAPPING_NAMES)
+
+MODEL_CONFIG_CLASSES: List[str] = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
 
@@ -89,12 +112,16 @@ class TrainingArguments:
     per_device_eval_batch_size: int = field(
         default=8, metadata={"help": "Batch size per GPU/TPU core/CPU for evaluation."}
     )
+    gradient_accumulation_steps: int = field(default=1, metadata={"help": "Number of updates steps to accumulate before performing a backward/update pass."})
     learning_rate: float = field(default=5e-5, metadata={"help": "The initial learning rate for AdamW."})
     weight_decay: float = field(default=0.0, metadata={"help": "Weight decay for AdamW if we apply some."})
     adam_beta1: float = field(default=0.9, metadata={"help": "Beta1 for AdamW optimizer"})
     adam_beta2: float = field(default=0.999, metadata={"help": "Beta2 for AdamW optimizer"})
     adam_epsilon: float = field(default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."})
     adafactor: bool = field(default=False, metadata={"help": "Whether or not to replace AdamW by Adafactor."})
+    resume_from_checkpoint: str = field(default=None, metadata={"help": "If the training should continue from a checkpoint folder."})
+    with_tracking: bool = field(default=False, metadata={"help": "Whether to enable experiment trackers for logging."})
+    report_to: str = field(default='all', metadata={"help": 'The integration to report the results and logs to. Supported platforms are `"tensorboard"`, `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. Only applicable when `--with_tracking` is passed.'})
     num_train_epochs: float = field(default=3.0, metadata={"help": "Total number of training epochs to perform."})
     warmup_steps: int = field(default=0, metadata={"help": "Linear warmup over warmup_steps."})
     logging_steps: int = field(default=500, metadata={"help": "Log every X updates steps."})
@@ -300,8 +327,8 @@ def compute_input_and_target_lengths(inputs_length, noise_density, mean_noise_sp
     return tokens_length, targets_length
 
 
-@flax.struct.dataclass
-class FlaxDataCollatorForT5MLM:
+@dataclass
+class DataCollatorForT5MLM:
     """
     Data collator used for T5 span-masked language modeling.
     It is made sure that after masking the inputs are of length `data_args.max_seq_length` and targets are also of fixed length.
@@ -519,7 +546,18 @@ def main():
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_t5_mlm", model_args, data_args, framework="flax")
+    send_example_telemetry("run_t5_mlm", model_args, data_args, framework="pytorch")
+
+    # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
+    # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
+    # in the environment
+    accelerator_log_kwargs: Dict[str, Any] = {}
+
+    if training_args.with_tracking:
+        accelerator_log_kwargs["log_with"] = training_args.report_to
+        accelerator_log_kwargs["project_dir"] = training_args.output_dir
+    
+    accelerator = Accelerator(gradient_accumulation_steps=training_args.gradient_accumulation_steps, **accelerator_log_kwargs)
 
     if (
         os.path.exists(training_args.output_dir)
@@ -538,6 +576,13 @@ def main():
         level=logging.INFO,
         datefmt="[%X]",
     )
+    logger.info(accelerator.state, main_process_only=False)
+    if accelerator.is_local_main_process:
+        datasets.utils.logging.set_verbosity_warning()
+        transformers.utils.logging.set_verbosity_info()
+    else:
+        datasets.utils.logging.set_verbosity_error()
+        transformers.utils.logging.set_verbosity_error()
 
     # Log on each process the small summary:
     logger = logging.getLogger(__name__)
@@ -567,22 +612,22 @@ def main():
     # 'text' is found. You can easily tweak this behavior (see below).
     if data_args.dataset_name is not None:
         # Downloading and loading a dataset from the hub.
-        datasets = load_dataset(
+        dataset = load_dataset(
             data_args.dataset_name,
             data_args.dataset_config_name,
             cache_dir=model_args.cache_dir,
             token=model_args.token,
         )
 
-        if "validation" not in datasets.keys():
-            datasets["validation"] = load_dataset(
+        if "validation" not in dataset.keys():
+            dataset["validation"] = load_dataset(
                 data_args.dataset_name,
                 data_args.dataset_config_name,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
                 token=model_args.token,
             )
-            datasets["train"] = load_dataset(
+            dataset["train"] = load_dataset(
                 data_args.dataset_name,
                 data_args.dataset_config_name,
                 split=f"train[{data_args.validation_split_percentage}%:]",
@@ -598,22 +643,22 @@ def main():
         extension = data_args.train_file.split(".")[-1]
         if extension == "txt":
             extension = "text"
-        datasets = load_dataset(
+        dataset = load_dataset(
             extension,
             data_files=data_files,
             cache_dir=model_args.cache_dir,
             token=model_args.token,
         )
 
-        if "validation" not in datasets.keys():
-            datasets["validation"] = load_dataset(
+        if "validation" not in dataset.keys():
+            dataset["validation"] = load_dataset(
                 extension,
                 data_files=data_files,
                 split=f"train[:{data_args.validation_split_percentage}%]",
                 cache_dir=model_args.cache_dir,
                 token=model_args.token,
             )
-            datasets["train"] = load_dataset(
+            dataset["train"] = load_dataset(
                 extension,
                 data_files=data_files,
                 split=f"train[{data_args.validation_split_percentage}%:]",
@@ -665,9 +710,9 @@ def main():
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     if training_args.do_train:
-        column_names = datasets["train"].column_names
+        column_names = dataset["train"].column_names
     else:
-        column_names = datasets["validation"].column_names
+        column_names = dataset["validation"].column_names
     text_column_name = "text" if "text" in column_names else column_names[0]
 
     max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
@@ -677,7 +722,7 @@ def main():
     def tokenize_function(examples):
         return tokenizer(examples[text_column_name], return_attention_mask=False)
 
-    tokenized_datasets = datasets.map(
+    tokenized_datasets = dataset.map(
         tokenize_function,
         batched=True,
         num_proc=data_args.preprocessing_num_workers,
@@ -725,7 +770,7 @@ def main():
 
     # Enable tensorboard only on the master node
     has_tensorboard = is_tensorboard_available()
-    if has_tensorboard and jax.process_index() == 0:
+    if has_tensorboard and accelerator.is_local_main_process:
         try:
             from flax.metrics.tensorboard import SummaryWriter
 
@@ -742,11 +787,12 @@ def main():
         )
 
     # Initialize our training
+    torch.manual_seed(training_args.seed)
     rng = jax.random.PRNGKey(training_args.seed)
     dropout_rngs = jax.random.split(rng, jax.local_device_count())
 
     if model_args.model_name_or_path:
-        model = FlaxT5ForConditionalGeneration.from_pretrained(
+        model = T5ForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             config=config,
             seed=training_args.seed,
@@ -755,7 +801,7 @@ def main():
         )
     else:
         config.vocab_size = len(tokenizer)
-        model = FlaxT5ForConditionalGeneration(
+        model = T5ForConditionalGeneration(
             config,
             seed=training_args.seed,
             dtype=getattr(jnp, model_args.dtype),
@@ -763,7 +809,7 @@ def main():
 
     # Data collator
     # This one will take care of randomly masking the tokens.
-    data_collator = FlaxDataCollatorForT5MLM(
+    data_collator = DataCollatorForT5MLM(
         tokenizer=tokenizer,
         noise_density=data_args.mlm_probability,
         mean_noise_span_length=data_args.mean_noise_span_length,
@@ -830,6 +876,14 @@ def main():
             mask=decay_mask_fn,
         )
 
+    # We need to initialize the trackers we use, and also store our configuration.
+    # The trackers initializes automatically on the main process.
+    if training_args.with_tracking:
+        experiment_config = vars(args)
+        # TensorBoard cannot log Enums, need the raw value
+        experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
+        accelerator.init_trackers("mlm_no_trainer", experiment_config)
+
     # Setup train state
     state = train_state.TrainState.create(apply_fn=model.__call__, params=model.params, tx=optimizer)
 
@@ -885,9 +939,18 @@ def main():
     state = jax_utils.replicate(state)
 
     train_time = 0
-    epochs = tqdm(range(num_epochs), desc="Epoch ... ", position=0)
+    epochs = tqdm(range(starting_epoch, training_args.num_train_epochs), desc="Epoch ... ", position=0)
     for epoch in epochs:
         # ======================== Training ================================
+        model.train()
+        if training_args.with_tracking:
+            total_loss = 0
+        if training_args.resume_from_checkpoint and epoch == starting_epoch and resume_step is not None:
+            # We skip the first `n` batches in the dataloader when resuming from a checkpoint
+            active_dataloader = accelerator.skip_first_batches(train_dataloader, resume_step)
+        else:
+            active_dataloader = train_dataloader
+
         train_start = time.time()
         train_metrics = []
 
