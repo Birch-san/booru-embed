@@ -122,7 +122,8 @@ class TrainingArguments:
     adam_beta2: float = field(default=0.999, metadata={"help": "Beta2 for AdamW optimizer"})
     adam_epsilon: float = field(default=1e-8, metadata={"help": "Epsilon for AdamW optimizer."})
     adafactor: bool = field(default=False, metadata={"help": "Whether or not to replace AdamW by Adafactor."})
-    resume_from_checkpoint: str = field(default=None, metadata={"help": "If the training should continue from a checkpoint folder."})
+    resume_from_checkpoint: str = field(default=None, metadata={"help": "If the training should continue from a checkpoint folder. Cannot be used alongside --resume_from_most_recent_checkpoint."})
+    resume_from_most_recent_checkpoint: bool = field(default=False, metadata={"help": "Load most recent checkpoint.  Cannot be used alongside --resume_from_checkpoint"})
     checkpointing_steps: str = field(default=None, metadata={"help": "Whether the various states should be saved at the end of every n steps, or 'epoch' for each epoch."})
     with_tracking: bool = field(default=False, metadata={"help": "Whether to enable experiment trackers for logging."})
     report_to: str = field(default='all', metadata={"help": 'The integration to report the results and logs to. Supported platforms are `"tensorboard"`, `"wandb"`, `"comet_ml"` and `"clearml"`. Use `"all"` (default) to report to all integrations. Only applicable when `--with_tracking` is passed.'})
@@ -907,8 +908,42 @@ def main():
     logger.info(f"  Gradient Accumulation steps = {training_args.gradient_accumulation_steps}")
     logger.info(f"  Total optimization steps = {training_args.max_train_steps}")
 
+    progress_bar = tqdm(range(training_args.max_train_steps), disable=not accelerator.is_local_main_process)
     completed_steps = 0
     starting_epoch = 0
+
+    checkpoint_path: Optional[str] = None
+    # Potentially load in the weights and states from a previous save
+    if training_args.resume_from_checkpoint is not None or training_args.resume_from_most_recent_checkpoint:
+        if training_args.resume_from_most_recent_checkpoint is not None and training_args.resume_from_most_recent_checkpoint:
+            raise ValueError("Cannot supply both --resume_from_checkpoint and --resume_from_most_recent_checkpoint")
+        if training_args.resume_from_most_recent_checkpoint:
+            # Get the most recent checkpoint
+            dirs: List[str] = [f.name for f in os.scandir(os.getcwd()) if f.is_dir()]
+            dirs.sort(key=os.path.getctime)
+            checkpoint_path: str = dirs[-1]  # Sorts folders by date modified, most recent checkpoint is the last
+        else:
+            checkpoint_path: str = training_args.resume_from_checkpoint
+        checkpoint_path_basename: str = os.path.basename(checkpoint_path)
+
+        accelerator.print(f"Resuming from checkpoint: {checkpoint_path}")
+        accelerator.load_state(checkpoint_path_basename)
+        # Extract `epoch_{i}` or `step_{i}`
+        training_difference, _ = os.path.splitext(checkpoint_path_basename)
+
+        if "epoch" in training_difference:
+            starting_epoch = int(training_difference.replace("epoch_", "")) + 1
+            resume_step = None
+            completed_steps = starting_epoch * num_update_steps_per_epoch
+        else:
+            # need to multiply `gradient_accumulation_steps` to reflect real steps
+            resume_step = int(training_difference.replace("step_", "")) * training_args.gradient_accumulation_steps
+            starting_epoch = resume_step // len(train_dataloader)
+            resume_step -= starting_epoch * len(train_dataloader)
+            completed_steps = resume_step // training_args.gradient_accumulation_steps
+
+    # update the progress_bar if load from checkpoint
+    progress_bar.update(completed_steps)
 
     num_of_hosts = jax.process_count()
     current_host_idx = jax.process_index()
@@ -1014,8 +1049,7 @@ def main():
     state = jax_utils.replicate(state)
 
     train_time = 0
-    epochs = tqdm(range(starting_epoch, num_train_epochs), desc=f"r{accelerator.process_index} Epoch ... ", position=accelerator.process_index)
-    for epoch in epochs:
+    for epoch in tqdm(range(starting_epoch, num_train_epochs), desc=f"r{accelerator.process_index} Epoch ... ", position=accelerator.process_index):
         # ======================== Training ================================
         model.train()
         if training_args.with_tracking:
