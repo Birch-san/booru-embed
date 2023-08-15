@@ -42,7 +42,6 @@ from transformers import (
     T5TokenizerFast,
     DataCollatorForLanguageModeling,
     HfArgumentParser,
-    T5ForConditionalGeneration,
     Trainer,
     TrainingArguments,
     is_torch_tpu_available,
@@ -52,6 +51,7 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
+from src.model.modeling_t5_booru import T5BooruForMaskedLM
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -403,7 +403,7 @@ def main():
         )
 
     if model_args.model_name_or_path:
-        model: T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
+        model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
             config=config,
@@ -415,7 +415,7 @@ def main():
         )
     else:
         logger.info("Training new model from scratch")
-        model: T5ForConditionalGeneration = T5ForConditionalGeneration(config)
+        model: T5BooruForMaskedLM = T5BooruForMaskedLM(config)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.

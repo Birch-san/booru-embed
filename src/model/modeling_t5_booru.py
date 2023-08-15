@@ -204,7 +204,7 @@ PARALLELIZE_DOCSTRING = r"""
 
     ```python
     # Here is an example of a device map on a machine with 4 GPUs using t5-3b, which has a total of 24 attention modules:
-    model = T5ForConditionalGeneration.from_pretrained("t5-3b")
+    model = T5BooruForMaskedLM.from_pretrained("t5-3b")
     device_map = {
         0: [0, 1, 2],
         1: [3, 4, 5, 6, 7, 8, 9],
@@ -221,7 +221,7 @@ DEPARALLELIZE_DOCSTRING = r"""
 
     ```python
     # On a 4 GPU machine with t5-3b:
-    model = T5ForConditionalGeneration.from_pretrained("t5-3b")
+    model = T5BooruForMaskedLM.from_pretrained("t5-3b")
     device_map = {
         0: [0, 1, 2],
         1: [3, 4, 5, 6, 7, 8, 9],
@@ -801,7 +801,7 @@ class T5PreTrainedModel(PreTrainedModel):
         factor = self.config.initializer_factor  # Used for testing weights initialization
         if isinstance(module, T5LayerNorm):
             module.weight.data.fill_(factor * 1.0)
-        elif isinstance(module, (T5Model, T5ForConditionalGeneration, T5EncoderModel)):
+        elif isinstance(module, (T5Model, T5BooruForMaskedLM, T5EncoderModel)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
@@ -1445,7 +1445,7 @@ class T5Model(T5PreTrainedModel):
         >>> decoder_input_ids = tokenizer("Studies show that", return_tensors="pt").input_ids  # Batch size 1
 
         >>> # preprocess: Prepend decoder_input_ids with start token which is pad token for T5Model.
-        >>> # This is not needed for torch's T5ForConditionalGeneration as it does this internally using labels arg.
+        >>> # This is not needed for torch's T5BooruForMaskedLM as it does this internally using labels arg.
         >>> decoder_input_ids = model._shift_right(decoder_input_ids)
 
         >>> # forward pass
@@ -1524,7 +1524,7 @@ class T5Model(T5PreTrainedModel):
 
 
 @add_start_docstrings("""T5 Model with a `language modeling` head on top.""", T5_START_DOCSTRING)
-class T5ForConditionalGeneration(T5PreTrainedModel):
+class T5BooruForMaskedLM(T5PreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [
         "decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
     ]
@@ -1560,7 +1560,7 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
-            "`T5ForConditionalGeneration.parallelize` is deprecated and will be removed in v5 of Transformers, you"
+            "`T5BooruForMaskedLM.parallelize` is deprecated and will be removed in v5 of Transformers, you"
             " should load your model with `device_map='balanced'` in the call to `from_pretrained`. You can also"
             " provide your own `device_map` but it needs to be a dictionary module_name to device, so for instance"
             " {'encoder.block.0': 0, 'encoder.block.1': 1, ...}",
@@ -1644,10 +1644,10 @@ class T5ForConditionalGeneration(T5PreTrainedModel):
         Examples:
 
         ```python
-        >>> from transformers import AutoTokenizer, T5ForConditionalGeneration
+        >>> from transformers import AutoTokenizer, T5BooruForMaskedLM
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-small")
-        >>> model = T5ForConditionalGeneration.from_pretrained("t5-small")
+        >>> model = T5BooruForMaskedLM.from_pretrained("t5-small")
 
         >>> # training
         >>> input_ids = tokenizer("The <extra_id_0> walks in <extra_id_1> park", return_tensors="pt").input_ids
