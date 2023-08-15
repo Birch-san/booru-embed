@@ -132,7 +132,9 @@
       "module": "script.run_t5_mlm_torch_2",
       "justMyCode": false,
       "args": [
-        "--model_name_or_path", "roberta-base",
+        // "--model_name_or_path", "roberta-base",
+        "--config_name", "google/t5-v1_1-small",
+        "--tokenizer_name", "google/t5-v1_1-small",
         "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
         // "--dataset_name", "wikitext",
         // "--dataset_config_name", "wikitext-2-raw-v1",

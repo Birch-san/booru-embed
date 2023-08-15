@@ -38,11 +38,11 @@ import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
-    AutoConfig,
-    AutoModelForMaskedLM,
-    AutoTokenizer,
+    T5Config,
+    T5TokenizerFast,
     DataCollatorForLanguageModeling,
     HfArgumentParser,
+    T5ForConditionalGeneration,
     Trainer,
     TrainingArguments,
     is_torch_tpu_available,
@@ -373,9 +373,9 @@ def main():
         "trust_remote_code": model_args.trust_remote_code,
     }
     if model_args.config_name:
-        config = AutoConfig.from_pretrained(model_args.config_name, **config_kwargs)
+        config: T5Config = T5Config.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
-        config = AutoConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+        config: T5Config = T5Config.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
@@ -391,10 +391,11 @@ def main():
         "token": model_args.token,
         "trust_remote_code": model_args.trust_remote_code,
     }
+    # using T5TokenizerFast for now, but for booru-embed we'll replace this with a (non-fast) bespoke tokenizer anyway
     if model_args.tokenizer_name:
-        tokenizer = AutoTokenizer.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
+        tokenizer: T5TokenizerFast = T5TokenizerFast.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
     elif model_args.model_name_or_path:
-        tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
+        tokenizer: T5TokenizerFast = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
     else:
         raise ValueError(
             "You are instantiating a new tokenizer from scratch. This is not supported by this script."
@@ -402,7 +403,7 @@ def main():
         )
 
     if model_args.model_name_or_path:
-        model = AutoModelForMaskedLM.from_pretrained(
+        model: T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
             model_args.model_name_or_path,
             from_tf=bool(".ckpt" in model_args.model_name_or_path),
             config=config,
@@ -414,7 +415,7 @@ def main():
         )
     else:
         logger.info("Training new model from scratch")
-        model = AutoModelForMaskedLM.from_config(config, trust_remote_code=model_args.trust_remote_code)
+        model: T5ForConditionalGeneration = T5ForConditionalGeneration(config)
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -583,6 +584,8 @@ def main():
     # Data collator
     # This one will take care of randomly masking the tokens.
     pad_to_multiple_of_8 = data_args.line_by_line and training_args.fp16 and not data_args.pad_to_max_length
+    # for testing only (enable simple MLM objective by picking just one of T5 tokenizer's T5-MLM tokens)
+    tokenizer.mask_token = '<extra_id_0>'
     data_collator = DataCollatorForLanguageModeling(
         tokenizer=tokenizer,
         mlm_probability=data_args.mlm_probability,
