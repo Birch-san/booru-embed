@@ -124,6 +124,25 @@
         "--per_device_eval_batch_size", "8",
         "--output_dir", "./out-mlm-torch-no-trainer",
       ]
-    }
+    },
+    {
+      "name": "Python: T5 MLM Torch 2",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_torch_2",
+      "justMyCode": false,
+      "args": [
+        "--model_name_or_path", "roberta-base",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        // "--dataset_name", "wikitext",
+        // "--dataset_config_name", "wikitext-2-raw-v1",
+        "--per_device_train_batch_size", "8",
+        "--per_device_eval_batch_size", "8",
+        "--do_train",
+        // "--do_eval",
+        "--output_dir", "./out-t5-mlm-torch-2",
+        "--overwrite_output_dir",
+      ]
+    },
   ]
 }
