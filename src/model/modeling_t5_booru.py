@@ -22,8 +22,9 @@ import warnings
 from typing import Optional, Tuple, Union
 
 import torch
-from torch import nn
-from torch.nn import CrossEntropyLoss
+from torch import nn, FloatTensor, LongTensor
+from torch.nn import LogSoftmax
+from torch.nn.functional import one_hot
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -1530,6 +1531,8 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
     ]
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
 
+    loss_fn: LogSoftmax
+
     def __init__(self, config: T5Config):
         super().__init__(config)
         self.model_dim = config.d_model
@@ -1549,6 +1552,8 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         self.decoder = T5Stack(decoder_config, self.shared)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+
+        self.loss_fn = LogSoftmax(dim=-1)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1632,6 +1637,7 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
+        z_loss: Optional[float] = 1e-4
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -1697,6 +1703,7 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
+        # TODO: consider whether to shift-right here, or to do it in the collator, like run_t5_mlm_flax.py does.
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids = self._shift_right(labels)
@@ -1741,15 +1748,27 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/transformer.py#L586
             sequence_output = sequence_output * (self.model_dim**-0.5)
 
-        lm_logits = self.lm_head(sequence_output)
+        lm_logits: FloatTensor = self.lm_head(sequence_output)
 
         loss = None
         if labels is not None:
-            loss_fct = CrossEntropyLoss(ignore_index=-100)
             # move labels to correct device to enable PP
-            labels = labels.to(lm_logits.device)
-            loss = loss_fct(lm_logits.view(-1, lm_logits.size(-1)), labels.view(-1))
-            # TODO(thom): Add z_loss https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            labels: LongTensor = labels.to(lm_logits.device)
+            # labels needs to be one-hot, broadcastable to `[..., num_classes]`
+            labels_oh: LongTensor = one_hot(labels, lm_logits.size(-1))
+
+            # https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
+            # z_loss encourages the logits:
+            # - to not drift too far from zero (which can cause unacceptable roundoff errors in bfloat16)
+            # - to be normalized log-probabilities
+            if z_loss is not None and z_loss > 0.:
+                log_z: FloatTensor = lm_logits.logsumexp(dim=-1)
+                log_softmax: FloatTensor = lm_logits - log_z
+            else:
+                log_softmax: FloatTensor = self.loss_fn(lm_logits)
+            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg().mean()
+            if z_loss is not None and z_loss > 0.:
+                loss += z_loss * log_z ** 2
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
