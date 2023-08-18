@@ -18,6 +18,10 @@ Pretraining the library models for T5-like span-masked language modeling on a te
 
 Here is the full list of checkpoints on the hub that can be pretrained by this script:
 https://huggingface.co/models?filter=t5
+
+UNFINISHED
+this was my attempt to port run_t5_mlm_flax.py to PyTorch.
+but then I figured it'd be easier to port run_mlm_torch.py to use T5-style MLM.
 """
 import json
 import logging
