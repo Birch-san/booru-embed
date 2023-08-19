@@ -33,6 +33,7 @@ from typing import Optional
 import datasets
 import evaluate
 from datasets import load_dataset
+from datasets.formatting.formatting import LazyBatch
 
 import transformers
 from transformers import (
@@ -41,6 +42,7 @@ from transformers import (
     AutoConfig,
     AutoModelForMaskedLM,
     AutoTokenizer,
+    BatchEncoding,
     DataCollatorForLanguageModeling,
     HfArgumentParser,
     Trainer,
@@ -506,7 +508,7 @@ def main():
         # Otherwise, we tokenize every text, then concatenate them together before splitting them in smaller parts.
         # We use `return_special_tokens_mask=True` because DataCollatorForLanguageModeling (see below) is more
         # efficient when it receives the `special_tokens_mask`.
-        def tokenize_function(examples):
+        def tokenize_function(examples: LazyBatch) -> BatchEncoding:
             return tokenizer(examples[text_column_name], return_special_tokens_mask=True)
 
         with training_args.main_process_first(desc="dataset map tokenization"):
