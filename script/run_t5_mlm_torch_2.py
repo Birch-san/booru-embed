@@ -33,14 +33,16 @@ from typing import Optional, Dict, Any
 import datasets
 import evaluate
 from datasets import load_dataset
+from datasets.formatting.formatting import LazyBatch
 
 import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
+    BatchEncoding,
     T5Config,
     T5TokenizerFast,
-    DataCollatorForLanguageModeling,
+    # DataCollatorForLanguageModeling,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
@@ -52,6 +54,8 @@ from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
+from src.t5_mlm_collator import DataCollatorForT5MLM
+from src.compute_input_and_target_lengths import compute_input_and_target_lengths
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -191,6 +195,10 @@ class DataTrainingArguments:
     )
     mlm_probability: float = field(
         default=0.15, metadata={"help": "Ratio of tokens to mask for masked language modeling loss"}
+    )
+    mean_noise_span_length: float = field(
+        default=3.0,
+        metadata={"help": "Mean span length of masked tokens"},
     )
     line_by_line: bool = field(
         default=False,
@@ -423,6 +431,15 @@ def main():
     if len(tokenizer) > embedding_size:
         model.resize_token_embeddings(len(tokenizer))
 
+    # we'll want to make this 255 for booru-embed (e.g. by declaring a tokenizer.model_max_length)
+    max_seq_length: int = min(data_args.max_seq_length or tokenizer.model_max_length, tokenizer.model_max_length)
+
+    expanded_inputs_length, targets_length = compute_input_and_target_lengths(
+        inputs_length=max_seq_length,
+        noise_density=data_args.mlm_probability,
+        mean_noise_span_length=data_args.mean_noise_span_length,
+    )
+
     # Preprocessing the datasets.
     # First we tokenize all the texts.
     if training_args.do_train:
@@ -487,8 +504,12 @@ def main():
         # Otherwise, we tokenize every text, then concatenate them together before splitting them in smaller parts.
         # We use `return_special_tokens_mask=True` because DataCollatorForLanguageModeling (see below) is more
         # efficient when it receives the `special_tokens_mask`.
-        def tokenize_function(examples):
-            return tokenizer(examples[text_column_name], return_special_tokens_mask=True)
+        # TODO: it turns out the "462 sequence length" happened **after** we got our input_ids into the data collator.
+        # maybe we don't need to pad to 512 here?
+        def tokenize_function(examples: LazyBatch) -> BatchEncoding:
+            nonlocal expanded_inputs_length
+            return tokenizer(examples[text_column_name], return_special_tokens_mask=True, return_tensors='pt', padding='max_length', truncation=True, max_length=expanded_inputs_length)
+
 
         with training_args.main_process_first(desc="dataset map tokenization"):
             if not data_args.streaming:
@@ -509,16 +530,18 @@ def main():
 
         # Main data processing function that will concatenate all texts from our dataset and generate chunks of
         # max_seq_length.
-        def group_texts(examples):
+        def group_texts(examples: LazyBatch) -> Dict[str, Any]:
+            nonlocal expanded_inputs_length
             # Concatenate all texts.
             concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
             total_length = len(concatenated_examples[list(examples.keys())[0]])
-            # We drop the small remainder, and if the total_length < max_seq_length  we exclude this batch and return an empty dict.
+            # We drop the small remainder, and if the total_length < expanded_inputs_length  we exclude this batch and return an empty dict.
             # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
-            total_length = (total_length // max_seq_length) * max_seq_length
+            if total_length >= expanded_inputs_length:
+                total_length = (total_length // expanded_inputs_length) * expanded_inputs_length
             # Split by chunks of max_len.
             result = {
-                k: [t[i : i + max_seq_length] for i in range(0, total_length, max_seq_length)]
+                k: [t[i : i + expanded_inputs_length] for i in range(0, total_length, expanded_inputs_length)]
                 for k, t in concatenated_examples.items()
             }
             return result
@@ -530,6 +553,7 @@ def main():
         # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
         # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
 
+        # TODO: replace this with context length bucketing
         with training_args.main_process_first(desc="grouping texts together"):
             if not data_args.streaming:
                 tokenized_datasets = tokenized_datasets.map(
@@ -583,13 +607,27 @@ def main():
 
     # Data collator
     # This one will take care of randomly masking the tokens.
-    pad_to_multiple_of_8 = data_args.line_by_line and training_args.fp16 and not data_args.pad_to_max_length
+    # pad_to_multiple_of_8 = data_args.line_by_line and training_args.fp16 and not data_args.pad_to_max_length
     # for testing only (enable simple MLM objective by picking just one of T5 tokenizer's T5-MLM tokens)
-    tokenizer.mask_token = '<extra_id_0>'
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm_probability=data_args.mlm_probability,
-        pad_to_multiple_of=8 if pad_to_multiple_of_8 else None,
+    # tokenizer.mask_token = '<extra_id_0>'
+    # data_collator = DataCollatorForLanguageModeling(
+    #     tokenizer=tokenizer,
+    #     mlm_probability=data_args.mlm_probability,
+    #     pad_to_multiple_of=8 if pad_to_multiple_of_8 else None,
+    # )
+
+    data_collator = DataCollatorForT5MLM(
+        # tokenizer=tokenizer,
+        # tokenizer=tokenize_function,
+        eos_token_id=tokenizer.eos_token_id,
+        sentinel_start_ix=tokenizer.vocab['<extra_id_99>'],
+        # sentinel_count=tokenizer.vocab['<extra_id_0>']-tokenizer.vocab['<extra_id_99>'],
+        noise_density=data_args.mlm_probability,
+        mean_noise_span_length=data_args.mean_noise_span_length,
+        input_length=max_seq_length,
+        target_length=targets_length,
+        pad_token_id=model.config.pad_token_id,
+        decoder_start_token_id=model.config.decoder_start_token_id,
     )
 
     # Initialize our Trainer
@@ -598,7 +636,8 @@ def main():
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
-        tokenizer=tokenizer,
+        # tokenizer=tokenizer,
+        tokenizer=tokenize_function,
         data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics
