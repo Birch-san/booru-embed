@@ -44,11 +44,14 @@ from transformers import (
     T5TokenizerFast,
     # DataCollatorForLanguageModeling,
     HfArgumentParser,
+    TensorType,
     Trainer,
     TrainingArguments,
     is_torch_tpu_available,
     set_seed,
 )
+from transformers.utils.generic import PaddingStrategy
+from transformers.tokenization_utils_base import TruncationStrategy
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
@@ -508,7 +511,14 @@ def main():
         # maybe we don't need to pad to 512 here?
         def tokenize_function(examples: LazyBatch) -> BatchEncoding:
             nonlocal expanded_inputs_length
-            return tokenizer(examples[text_column_name], return_special_tokens_mask=True, return_tensors='pt', padding='max_length', truncation=True, max_length=expanded_inputs_length)
+            return tokenizer(
+                examples[text_column_name],
+                return_special_tokens_mask=True,
+                return_tensors=TensorType.NUMPY,
+                padding=PaddingStrategy.MAX_LENGTH,
+                truncation=TruncationStrategy.LONGEST_FIRST,
+                max_length=expanded_inputs_length,
+            )
 
 
         with training_args.main_process_first(desc="dataset map tokenization"):
