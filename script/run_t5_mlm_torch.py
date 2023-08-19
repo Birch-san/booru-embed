@@ -22,6 +22,7 @@ https://huggingface.co/models?filter=t5
 UNFINISHED
 this was my attempt to port run_t5_mlm_flax.py to PyTorch.
 but then I figured it'd be easier to port run_mlm_torch.py to use T5-style MLM.
+Work resumed in run_t5_mlm_torch_2.py, then I switched to working on run_t5_mlm_torch_booru.py.
 """
 import json
 import logging

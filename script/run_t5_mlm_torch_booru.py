@@ -18,12 +18,6 @@ Fine-tuning the library models for masked language modeling (BERT, ALBERT, RoBER
 
 Here is the full list of checkpoints on the hub that can be fine-tuned by this script:
 https://huggingface.co/models?filter=fill-mask
-
-UNFINISHED. This began as an attempt to port run_mlm_torch.py to use T5-style MLM.
-But I'd like to support padding batch items, instead of grouping samples by length.
-This will require a drastic change to dataloading, so I think I will do it in concert
-with the switch to (pre-tokenized) Booru dataset.
-Work resumes in run_t5_mlm_torch_booru.py.
 """
 # You can also adapt this script on your own masked language modeling task. Pointers for this are left as comments.
 
