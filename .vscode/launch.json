@@ -146,5 +146,22 @@
         "--overwrite_output_dir",
       ]
     },
+    {
+      "name": "Python: T5 MLM Torch Booru",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_torch_booru",
+      "justMyCode": false,
+      "args": [
+        "--config_name", "google/t5-v1_1-small",
+        "--tokenizer_name", "google/t5-v1_1-small",
+        "--dataset_name", "ArtifactAI/arxiv-math-instruct-50k",
+        "--per_device_train_batch_size", "4",
+        "--per_device_eval_batch_size", "4",
+        "--do_train",
+        "--output_dir", "./out-t5-mlm-torch-booru",
+        "--overwrite_output_dir",
+      ]
+    },
   ]
 }

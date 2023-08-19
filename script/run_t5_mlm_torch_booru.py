@@ -24,11 +24,17 @@ https://huggingface.co/models?filter=fill-mask
 import logging
 import math
 import os
+from os import listdir
+from os.path import dirname, realpath, join
+from pathlib import Path
+import re
 import sys
 import warnings
 from dataclasses import dataclass, field
 from itertools import chain
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
+import numpy as np
+from numpy.typing import NDArray
 
 import datasets
 import evaluate
@@ -41,7 +47,6 @@ from transformers import (
     MODEL_FOR_MASKED_LM_MAPPING,
     BatchEncoding,
     T5Config,
-    T5TokenizerFast,
     # DataCollatorForLanguageModeling,
     HfArgumentParser,
     TensorType,
@@ -56,9 +61,11 @@ from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import check_min_version, send_example_telemetry
 from transformers.utils.versions import require_version
 
+from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
-from src.t5_mlm_collator import DataCollatorForT5MLM
 from src.compute_input_and_target_lengths import compute_input_and_target_lengths
+from src.booru_special_tokens import SpecialToken, make_mask_token
+from src.booru_collator import BooruDataCollatorForT5MLM
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -395,23 +402,11 @@ def main():
             config.update_from_string(model_args.config_overrides)
             logger.info(f"New config: {config}")
 
-    tokenizer_kwargs = {
-        "cache_dir": model_args.cache_dir,
-        "use_fast": model_args.use_fast_tokenizer,
-        "revision": model_args.model_revision,
-        "token": model_args.token,
-        "trust_remote_code": model_args.trust_remote_code,
-    }
-    # using T5TokenizerFast for now, but for booru-embed we'll replace this with a (non-fast) bespoke tokenizer anyway
-    if model_args.tokenizer_name:
-        tokenizer: T5TokenizerFast = T5TokenizerFast.from_pretrained(model_args.tokenizer_name, **tokenizer_kwargs)
-    elif model_args.model_name_or_path:
-        tokenizer: T5TokenizerFast = T5TokenizerFast.from_pretrained(model_args.model_name_or_path, **tokenizer_kwargs)
-    else:
-        raise ValueError(
-            "You are instantiating a new tokenizer from scratch. This is not supported by this script."
-            "You can do it from another script, save it, and load it from here, using --tokenizer_name."
-        )
+    # TODO: make a BooruTokenizer class, with an interface a bit more typical of transformers Tokenizers
+    vocab = Vocab()
+    # create this file by running scripts/make_tokenizer.py
+    with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
+        vocab.load(vocab_in)
 
     if model_args.model_name_or_path:
         model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
@@ -431,11 +426,13 @@ def main():
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
     embedding_size = model.get_input_embeddings().weight.shape[0]
-    if len(tokenizer) > embedding_size:
-        model.resize_token_embeddings(len(tokenizer))
+    if len(vocab.tokens) > embedding_size:
+        model.resize_token_embeddings(len(vocab.tokens))
 
-    # we'll want to make this 255 for booru-embed (e.g. by declaring a tokenizer.model_max_length)
-    max_seq_length: int = min(data_args.max_seq_length or tokenizer.model_max_length, tokenizer.model_max_length)
+    # TODO: save this into the model config or something
+    model_max_ctx_len = 255
+
+    max_seq_length: int = min(data_args.max_seq_length or model_max_ctx_len, model_max_ctx_len)
 
     expanded_inputs_length, targets_length = compute_input_and_target_lengths(
         inputs_length=max_seq_length,
@@ -452,21 +449,21 @@ def main():
     text_column_name = "text" if "text" in column_names else column_names[0]
 
     if data_args.max_seq_length is None:
-        max_seq_length = tokenizer.model_max_length
+        max_seq_length = model_max_ctx_len
         if max_seq_length > 1024:
             logger.warning(
                 "The chosen tokenizer supports a `model_max_length` that is longer than the default `block_size` value"
-                " of 1024. If you would like to use a longer `block_size` up to `tokenizer.model_max_length` you can"
+                " of 1024. If you would like to use a longer `block_size` up to `model_max_ctx_len` you can"
                 " override this default with `--block_size xxx`."
             )
             max_seq_length = 1024
     else:
-        if data_args.max_seq_length > tokenizer.model_max_length:
+        if data_args.max_seq_length > model_max_ctx_len:
             logger.warning(
                 f"The max_seq_length passed ({data_args.max_seq_length}) is larger than the maximum length for the"
-                f"model ({tokenizer.model_max_length}). Using max_seq_length={tokenizer.model_max_length}."
+                f"model ({model_max_ctx_len}). Using max_seq_length={model_max_ctx_len}."
             )
-        max_seq_length = min(data_args.max_seq_length, tokenizer.model_max_length)
+        max_seq_length = min(data_args.max_seq_length, model_max_ctx_len)
 
     if data_args.line_by_line:
         # When using line_by_line, we just tokenize each nonempty line.
@@ -617,21 +614,9 @@ def main():
 
     # Data collator
     # This one will take care of randomly masking the tokens.
-    # pad_to_multiple_of_8 = data_args.line_by_line and training_args.fp16 and not data_args.pad_to_max_length
-    # for testing only (enable simple MLM objective by picking just one of T5 tokenizer's T5-MLM tokens)
-    # tokenizer.mask_token = '<extra_id_0>'
-    # data_collator = DataCollatorForLanguageModeling(
-    #     tokenizer=tokenizer,
-    #     mlm_probability=data_args.mlm_probability,
-    #     pad_to_multiple_of=8 if pad_to_multiple_of_8 else None,
-    # )
-
-    data_collator = DataCollatorForT5MLM(
-        # tokenizer=tokenizer,
-        # tokenizer=tokenize_function,
-        eos_token_id=tokenizer.eos_token_id,
-        sentinel_start_ix=tokenizer.vocab['<extra_id_99>'],
-        # sentinel_count=tokenizer.vocab['<extra_id_0>']-tokenizer.vocab['<extra_id_99>'],
+    data_collator = BooruDataCollatorForT5MLM(
+        eos_token_id=vocab.token_to_ix(SpecialToken.EOS.value),
+        sentinel_start_ix=vocab.token_to_ix(make_mask_token(0)),
         noise_density=data_args.mlm_probability,
         mean_noise_span_length=data_args.mean_noise_span_length,
         input_length=max_seq_length,

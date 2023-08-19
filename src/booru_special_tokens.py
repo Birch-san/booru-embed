@@ -21,6 +21,9 @@ ratings: List[Rating] = ['g', 'e', 's', 'q']
 def make_rating_token(rating: Rating) -> str:
   return f'rating:{rating}'
 
+def make_mask_token(ix: int) -> str:
+  f'<mask_{ix}>'
+
 def get_booru_special_tokens(mask_token_count = 100) -> Generator[str, None, None]:
   for special_token in SpecialToken:
     yield special_token.value
@@ -29,4 +32,4 @@ def get_booru_special_tokens(mask_token_count = 100) -> Generator[str, None, Non
     yield make_rating_token(rating)
 
   for mask_token_ix in range(mask_token_count):
-    yield f'<mask_{mask_token_ix}>'
+    yield make_mask_token(mask_token_ix)
