@@ -3,7 +3,6 @@ from torch import Tensor
 from torch.nn import Module
 from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
-from transformers.data.data_collator import DataCollator
 from transformers.modeling_utils import PreTrainedModel
 from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 from transformers.trainer import Trainer
@@ -13,6 +12,8 @@ from typing import Callable, Dict, List, Optional, Tuple, Any
 from transformers.trainer_callback import TrainerCallback
 from transformers.trainer_utils import EvalPrediction
 from transformers.training_args import TrainingArguments
+
+from .booru_dataloader import BooruDataLoader
 
 class BooruTrainer(Trainer):
   """
@@ -44,9 +45,12 @@ class BooruTrainer(Trainer):
       optimizers=optimizers,
       preprocess_logits_for_metrics=preprocess_logits_for_metrics,
     )
+  
+  def num_examples(self, dataloader: DataLoader) -> int:
+    return super().num_examples(dataloader=dataloader)
 
-  def get_train_dataloader(self) -> DataLoader:
+  def get_train_dataloader(self) -> BooruDataLoader:
     return super().get_train_dataloader()
 
-  def get_eval_dataloader(self, eval_dataset: Optional[Dataset] = None) -> DataLoader:
+  def get_eval_dataloader(self, eval_dataset: Optional[Dataset] = None) -> BooruDataLoader:
     return super().get_eval_dataloader(eval_dataset=eval_dataset)
