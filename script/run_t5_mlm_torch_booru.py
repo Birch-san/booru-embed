@@ -68,6 +68,7 @@ from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.compute_input_and_target_lengths import compute_input_and_target_lengths
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
+from src.booru_trainer import BooruTrainer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -520,7 +521,7 @@ def main():
     )
 
     # Initialize our Trainer
-    trainer = Trainer(
+    trainer = BooruTrainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,
