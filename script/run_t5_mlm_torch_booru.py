@@ -39,6 +39,8 @@ from numpy.typing import NDArray
 import datasets
 import evaluate
 from datasets import load_dataset
+from datasets import DatasetDict, Dataset
+import pyarrow as pa
 from datasets.formatting.formatting import LazyBatch
 
 import transformers
@@ -327,55 +329,6 @@ def main():
     # Set seed before initializing model.
     set_seed(training_args.seed)
 
-    # Get the datasets: you can either provide your own CSV/JSON/TXT training and evaluation files (see below)
-    # or just provide the name of one of the public datasets available on the hub at https://huggingface.co/datasets/
-    # (the dataset will be downloaded automatically from the datasets Hub
-    #
-    # For CSV/JSON files, this script will use the column called 'text' or the first column. You can easily tweak this
-    # behavior (see below)
-    #
-    # In distributed training, the load_dataset function guarantee that only one local process can concurrently
-    # download the dataset.
-    load_dataset_args = []
-    load_dataset_kwargs: Dict[str, Any] = {
-        'cache_dir': model_args.cache_dir,
-        'token': model_args.token,
-    }
-    if data_args.dataset_name is None:
-        data_files = {}
-        if data_args.train_file is not None:
-            data_files["train"] = data_args.train_file
-        if data_args.validation_file is not None:
-            data_files["validation"] = data_args.validation_file
-        extension = data_args.train_file.split(".")[-1]
-        if extension == "txt":
-            extension = "text"
-        load_dataset_args = [extension]
-        load_dataset_kwargs['data_files'] = data_files
-    else:
-        # Downloading and loading a dataset from the hub.
-        load_dataset_args = [
-            data_args.dataset_name,
-            data_args.dataset_config_name,
-        ]
-
-    raw_datasets = load_dataset(
-        *load_dataset_args,
-        **load_dataset_kwargs,
-    )
-
-    if "validation" not in raw_datasets.keys():
-        raw_datasets["validation"] = load_dataset(
-            *load_dataset_args,
-            split=f"train[:{data_args.validation_split_percentage}%]",
-            **load_dataset_kwargs,
-        )
-        raw_datasets["train"] = load_dataset(
-            *load_dataset_args,
-            split=f"train[{data_args.validation_split_percentage}%:]",
-            **load_dataset_kwargs,
-        )
-
     # See more about loading any type of standard or custom dataset (from files, python dict, pandas DataFrame, etc) at
     # https://huggingface.co/docs/datasets/loading_datasets.html.
 
@@ -407,6 +360,7 @@ def main():
     # create this file by running scripts/make_tokenizer.py
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
+    assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
 
     if model_args.model_name_or_path:
         model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
@@ -440,14 +394,6 @@ def main():
         mean_noise_span_length=data_args.mean_noise_span_length,
     )
 
-    # Preprocessing the datasets.
-    # First we tokenize all the texts.
-    if training_args.do_train:
-        column_names = list(raw_datasets["train"].features)
-    else:
-        column_names = list(raw_datasets["validation"].features)
-    text_column_name = "text" if "text" in column_names else column_names[0]
-
     if data_args.max_seq_length is None:
         max_seq_length = model_max_ctx_len
         if max_seq_length > 1024:
@@ -465,116 +411,64 @@ def main():
             )
         max_seq_length = min(data_args.max_seq_length, model_max_ctx_len)
 
-    if data_args.line_by_line:
-        # When using line_by_line, we just tokenize each nonempty line.
-        padding = "max_length" if data_args.pad_to_max_length else False
+    script_dir = Path(dirname(realpath(__file__)))
+    repo_root: Path = script_dir.parent
+    # populate this folder by running tsv_bucketer.py
+    in_dir = repo_root.joinpath('out_lenbucket')
 
-        def tokenize_function(examples):
-            # Remove empty lines
-            examples[text_column_name] = [
-                line for line in examples[text_column_name] if len(line) > 0 and not line.isspace()
-            ]
-            return tokenizer(
-                examples[text_column_name],
-                padding=padding,
-                truncation=True,
-                max_length=max_seq_length,
-                # We use this option because DataCollatorForLanguageModeling (see below) is more efficient when it
-                # receives the `special_tokens_mask`.
-                return_special_tokens_mask=True,
-            )
+    potential_bucket_dirs: List[str] = listdir(in_dir)
+    bucket_values: List[int] = [int(dir.lstrip('b')) for dir in potential_bucket_dirs if bool(re.fullmatch(r'b[0-9]+', dir))]
+    bucket_values.sort()
+    # buckets = torch.tensor(bucket_values, dtype=torch.int16)
+    bucket_dirs: List[str] = [join(in_dir, f'b{val}') for val in bucket_values]
 
-        with training_args.main_process_first(desc="dataset map tokenization"):
-            if not data_args.streaming:
-                tokenized_datasets = raw_datasets.map(
-                    tokenize_function,
-                    batched=True,
-                    num_proc=data_args.preprocessing_num_workers,
-                    remove_columns=[text_column_name],
-                    load_from_cache_file=not data_args.overwrite_cache,
-                    desc="Running tokenizer on dataset line_by_line",
-                )
-            else:
-                tokenized_datasets = raw_datasets.map(
-                    tokenize_function,
-                    batched=True,
-                    remove_columns=[text_column_name],
-                )
-    else:
-        # Otherwise, we tokenize every text, then concatenate them together before splitting them in smaller parts.
-        # We use `return_special_tokens_mask=True` because DataCollatorForLanguageModeling (see below) is more
-        # efficient when it receives the `special_tokens_mask`.
-        # TODO: it turns out the "462 sequence length" happened **after** we got our input_ids into the data collator.
-        # maybe we don't need to pad to 512 here?
-        def tokenize_function(examples: LazyBatch) -> BatchEncoding:
-            nonlocal expanded_inputs_length
-            return tokenizer(
-                examples[text_column_name],
-                return_special_tokens_mask=True,
-                return_tensors=TensorType.NUMPY,
-                padding=PaddingStrategy.MAX_LENGTH,
-                truncation=TruncationStrategy.LONGEST_FIRST,
-                max_length=expanded_inputs_length,
-            )
+    bucket_samples_train: Dict[int, List[NDArray]] = {}
+    bucket_samples_test: Dict[int, List[NDArray]] = {}
 
+    train_test_split = 0.1
+    # for testing
+    sample_limit_per_bucket = 100
+    for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
+        values: NDArray = np.load(join(bucket_dir, 'values.npy'))
+        lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
+        # indices: NDArray = np.pad(lengths, (1, 0)).cumsum()[:-1]
+        indices: NDArray = np.roll(lengths.cumsum(), 1)
+        indices[0] = 0
 
-        with training_args.main_process_first(desc="dataset map tokenization"):
-            if not data_args.streaming:
-                tokenized_datasets = raw_datasets.map(
-                    tokenize_function,
-                    batched=True,
-                    num_proc=data_args.preprocessing_num_workers,
-                    remove_columns=column_names,
-                    load_from_cache_file=not data_args.overwrite_cache,
-                    desc="Running tokenizer on every text in dataset",
-                )
-            else:
-                tokenized_datasets = raw_datasets.map(
-                    tokenize_function,
-                    batched=True,
-                    remove_columns=column_names,
-                )
+        bucket_samples_train[bucket_value] = []
+        bucket_samples_test[bucket_value] = []
 
-        # Main data processing function that will concatenate all texts from our dataset and generate chunks of
-        # max_seq_length.
-        def group_texts(examples: LazyBatch) -> Dict[str, Any]:
-            nonlocal expanded_inputs_length
-            # Concatenate all texts.
-            concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
-            total_length = len(concatenated_examples[list(examples.keys())[0]])
-            # We drop the small remainder, and if the total_length < expanded_inputs_length  we exclude this batch and return an empty dict.
-            # We could add padding if the model supported it instead of this drop, you can customize this part to your needs.
-            if total_length >= expanded_inputs_length:
-                total_length = (total_length // expanded_inputs_length) * expanded_inputs_length
-            # Split by chunks of max_len.
-            result = {
-                k: [t[i : i + expanded_inputs_length] for i in range(0, total_length, expanded_inputs_length)]
-                for k, t in concatenated_examples.items()
-            }
-            return result
+        # print([vocab.tokens[token_ix] for token_ix in values[indices[0]:indices[0]+lengths[0]]])
 
-        # Note that with `batched=True`, this map processes 1,000 texts together, so group_texts throws away a
-        # remainder for each of those groups of 1,000 texts. You can adjust that batch_size here but a higher value
-        # might be slower to preprocess.
-        #
-        # To speed up this part, we use multiprocessing. See the documentation of the map method for more information:
-        # https://huggingface.co/docs/datasets/package_reference/main_classes.html#datasets.Dataset.map
+        for bucket_sample_ix, (index, length) in enumerate(zip(indices, lengths)):
+            caption: NDArray = values[index:index+length]
 
-        # TODO: replace this with context length bucketing
-        with training_args.main_process_first(desc="grouping texts together"):
-            if not data_args.streaming:
-                tokenized_datasets = tokenized_datasets.map(
-                    group_texts,
-                    batched=True,
-                    num_proc=data_args.preprocessing_num_workers,
-                    load_from_cache_file=not data_args.overwrite_cache,
-                    desc=f"Grouping texts in chunks of {max_seq_length}",
-                )
-            else:
-                tokenized_datasets = tokenized_datasets.map(
-                    group_texts,
-                    batched=True,
-                )
+            put_in_eval: bool = bucket_sample_ix % 100 < int(train_test_split * 100)
+            target_bucket_dict: Dict[int, List[NDArray]] = bucket_samples_test if put_in_eval else bucket_samples_train
+            target_bucket: List[NDArray] = target_bucket_dict[bucket_value]
+
+            target_bucket.append(caption)
+            # print([vocab.tokens[token_ix] for token_ix in caption])
+            
+            if bucket_sample_ix >= sample_limit_per_bucket-1:
+                break # just taking a handful of samples per bucket for now
+        break # just peeking in first bucket for now
+
+    # TODO: pad to fixed length, store true length in separate column
+    schema = pa.schema([
+        # turn into fixed-length with:
+        # pa.list_(pa.int16(), bucket_values[0])
+        pa.field('input_ids', pa.list_(pa.int16())),
+    ])
+
+    train_table = pa.Table.from_arrays([bucket_samples_train[bucket_values[0]]], schema=schema)
+    train_dataset = Dataset(train_table)
+    test_table = pa.Table.from_arrays([bucket_samples_test[bucket_values[0]]], schema=schema)
+    test_dataset = Dataset(test_table)
+    tokenized_datasets = DatasetDict({
+        'train': train_dataset,
+        'validation': test_dataset,
+    })
 
     if training_args.do_train:
         if "train" not in tokenized_datasets:
@@ -615,13 +509,13 @@ def main():
     # Data collator
     # This one will take care of randomly masking the tokens.
     data_collator = BooruDataCollatorForT5MLM(
-        eos_token_id=vocab.token_to_ix(SpecialToken.EOS.value),
-        sentinel_start_ix=vocab.token_to_ix(make_mask_token(0)),
+        eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
+        pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
+        sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
         noise_density=data_args.mlm_probability,
         mean_noise_span_length=data_args.mean_noise_span_length,
         input_length=max_seq_length,
         target_length=targets_length,
-        pad_token_id=model.config.pad_token_id,
         decoder_start_token_id=model.config.decoder_start_token_id,
     )
 
@@ -632,7 +526,7 @@ def main():
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
         # tokenizer=tokenizer,
-        tokenizer=tokenize_function,
+        # tokenizer=tokenize_function,
         data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.do_eval and not is_torch_tpu_available() else None,
         preprocess_logits_for_metrics=preprocess_logits_for_metrics

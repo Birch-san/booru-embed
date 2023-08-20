@@ -22,7 +22,7 @@ def make_rating_token(rating: Rating) -> str:
   return f'rating:{rating}'
 
 def make_mask_token(ix: int) -> str:
-  f'<mask_{ix}>'
+  return f'<mask_{ix}>'
 
 def get_booru_special_tokens(mask_token_count = 100) -> Generator[str, None, None]:
   for special_token in SpecialToken:

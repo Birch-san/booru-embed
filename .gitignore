@@ -9,3 +9,5 @@ __pycache__/
 /out-t5-mlm-torch/
 /out-t5-mlm-torch-2/
 /out-mlm-torch/
+/out_tokenizer/
+runs/
