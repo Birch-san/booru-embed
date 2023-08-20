@@ -35,6 +35,9 @@ from itertools import chain
 from typing import Optional, Dict, Any, List
 import numpy as np
 from numpy.typing import NDArray
+import torch
+from torch.nn.utils.rnn import pad_sequence
+from torch import tensor, ShortTensor
 
 import datasets
 import evaluate
@@ -69,6 +72,7 @@ from src.compute_input_and_target_lengths import compute_input_and_target_length
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_trainer import BooruTrainer
+from src.booru_dataset import BooruDataset
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -423,17 +427,17 @@ def main():
     # buckets = torch.tensor(bucket_values, dtype=torch.int16)
     bucket_dirs: List[str] = [join(in_dir, f'b{val}') for val in bucket_values]
 
-    bucket_samples_train: Dict[int, List[NDArray]] = {}
-    bucket_samples_test: Dict[int, List[NDArray]] = {}
+    bucket_samples_train: Dict[int, List[ShortTensor]] = {}
+    bucket_samples_test: Dict[int, List[ShortTensor]] = {}
 
     train_test_split = 0.1
     # for testing
     sample_limit_per_bucket = 100
     for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
-        values: NDArray = np.load(join(bucket_dir, 'values.npy'))
-        lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
+        values: ShortTensor = tensor(np.load(join(bucket_dir, 'values.npy')), dtype=torch.int16)
+        lengths: ShortTensor = tensor(np.load(join(bucket_dir, 'lengths.npy')), dtype=torch.int16)
         # indices: NDArray = np.pad(lengths, (1, 0)).cumsum()[:-1]
-        indices: NDArray = np.roll(lengths.cumsum(), 1)
+        indices: ShortTensor = lengths.cumsum(0).roll(1)
         indices[0] = 0
 
         bucket_samples_train[bucket_value] = []
@@ -442,30 +446,37 @@ def main():
         # print([vocab.tokens[token_ix] for token_ix in values[indices[0]:indices[0]+lengths[0]]])
 
         for bucket_sample_ix, (index, length) in enumerate(zip(indices, lengths)):
-            caption: NDArray = values[index:index+length]
+            caption: ShortTensor = values[index:index+length]
 
             put_in_eval: bool = bucket_sample_ix % 100 < int(train_test_split * 100)
-            target_bucket_dict: Dict[int, List[NDArray]] = bucket_samples_test if put_in_eval else bucket_samples_train
-            target_bucket: List[NDArray] = target_bucket_dict[bucket_value]
+            target_bucket_dict: Dict[int, List[ShortTensor]] = bucket_samples_test if put_in_eval else bucket_samples_train
+            target_bucket: List[ShortTensor] = target_bucket_dict[bucket_value]
 
             target_bucket.append(caption)
             # print([vocab.tokens[token_ix] for token_ix in caption])
             
             if bucket_sample_ix >= sample_limit_per_bucket-1:
                 break # just taking a handful of samples per bucket for now
+        del values, lengths, indices
         break # just peeking in first bucket for now
 
-    # TODO: pad to fixed length, store true length in separate column
-    schema = pa.schema([
-        # turn into fixed-length with:
-        # pa.list_(pa.int16(), bucket_values[0])
-        pa.field('input_ids', pa.list_(pa.int16())),
-    ])
-
-    train_table = pa.Table.from_arrays([bucket_samples_train[bucket_values[0]]], schema=schema)
-    train_dataset = Dataset(train_table)
-    test_table = pa.Table.from_arrays([bucket_samples_test[bucket_values[0]]], schema=schema)
-    test_dataset = Dataset(test_table)
+    train_dataset = BooruDataset(
+        pad_sequence(
+            sequences=bucket_samples_train[bucket_values[0]],
+            batch_first=True,
+            padding_value=vocab.token_to_ix[SpecialToken.Pad.value],
+        ),
+        lengths=tensor([len(s) for s in bucket_samples_train[bucket_values[0]]], dtype=torch.int16),
+    )
+    test_dataset = BooruDataset(
+        pad_sequence(
+            sequences=bucket_samples_test[bucket_values[0]],
+            batch_first=True,
+            padding_value=vocab.token_to_ix[SpecialToken.Pad.value],
+        ),
+        lengths=tensor([len(s) for s in bucket_samples_test[bucket_values[0]]], dtype=torch.int16),
+    )
+    del bucket_samples_train, bucket_samples_test
     tokenized_datasets = DatasetDict({
         'train': train_dataset,
         'validation': test_dataset,
@@ -521,7 +532,8 @@ def main():
     )
 
     # Initialize our Trainer
-    trainer = BooruTrainer(
+    # trainer = BooruTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
         train_dataset=train_dataset if training_args.do_train else None,

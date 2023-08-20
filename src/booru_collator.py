@@ -4,6 +4,8 @@ from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
 from typing import List, Dict
 import numpy as np
 
+from .booru_dataset import BooruDatum
+
 @dataclass
 class BooruDataCollatorForT5MLM:
     """
@@ -39,7 +41,7 @@ class BooruDataCollatorForT5MLM:
     pad_token_id: int
     decoder_start_token_id: int
 
-    def __call__(self, examples: List[Dict[str, np.ndarray]]) -> BatchEncoding:
+    def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
         # convert list to dict and tensorize input
         batch = BatchEncoding(
             {k: np.array([examples[i][k] for i in range(len(examples))]) for k, v in examples[0].items()}
