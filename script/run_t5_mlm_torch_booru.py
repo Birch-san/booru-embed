@@ -31,39 +31,27 @@ import re
 import sys
 import warnings
 from dataclasses import dataclass, field
-from itertools import chain
-from typing import Optional, Dict, Any, List
+from typing import Optional, Dict, List
 import numpy as np
 from numpy.typing import NDArray
-import torch
-from torch.nn.utils.rnn import pad_sequence
-from torch import tensor, ShortTensor
 
 import datasets
 import evaluate
-from datasets import load_dataset
-from datasets import DatasetDict, Dataset
-import pyarrow as pa
-from datasets.formatting.formatting import LazyBatch
+from datasets import DatasetDict
 
 import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
-    BatchEncoding,
     T5Config,
-    # DataCollatorForLanguageModeling,
     HfArgumentParser,
-    TensorType,
     Trainer,
     TrainingArguments,
     is_torch_tpu_available,
     set_seed,
 )
-from transformers.utils.generic import PaddingStrategy
-from transformers.tokenization_utils_base import TruncationStrategy
 from transformers.trainer_utils import get_last_checkpoint
-from transformers.utils import check_min_version, send_example_telemetry
+from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 
 from src.vocab import Vocab
@@ -71,8 +59,7 @@ from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.compute_input_and_target_lengths import compute_input_and_target_lengths
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
-from src.booru_trainer import BooruTrainer
-from src.booru_dataset import BooruDataset
+from src.booru_dataset import BooruDataset, BucketContent
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -424,57 +411,45 @@ def main():
     potential_bucket_dirs: List[str] = listdir(in_dir)
     bucket_values: List[int] = [int(dir.lstrip('b')) for dir in potential_bucket_dirs if bool(re.fullmatch(r'b[0-9]+', dir))]
     bucket_values.sort()
-    # buckets = torch.tensor(bucket_values, dtype=torch.int16)
     bucket_dirs: List[str] = [join(in_dir, f'b{val}') for val in bucket_values]
 
-    bucket_samples_train: Dict[int, List[ShortTensor]] = {}
-    bucket_samples_test: Dict[int, List[ShortTensor]] = {}
+    bucket_samples_train: Dict[int, BucketContent] = {}
+    bucket_samples_test: Dict[int, BucketContent] = {}
 
     train_test_split = 0.1
     # for testing
     sample_limit_per_bucket = 100
     for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
-        values: ShortTensor = tensor(np.load(join(bucket_dir, 'values.npy')), dtype=torch.int16)
-        lengths: ShortTensor = tensor(np.load(join(bucket_dir, 'lengths.npy')), dtype=torch.int16)
-        # indices: NDArray = np.pad(lengths, (1, 0)).cumsum()[:-1]
-        indices: ShortTensor = lengths.cumsum(0).roll(1)
+        values: NDArray = np.load(join(bucket_dir, 'values.npy'))
+        lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
+        indices: NDArray = np.roll(np.cumsum(lengths), 1)
         indices[0] = 0
 
-        bucket_samples_train[bucket_value] = []
-        bucket_samples_test[bucket_value] = []
+        samples_to_take = min(values.shape[0], sample_limit_per_bucket)
+        bucket_data: NDArray = np.full((samples_to_take, bucket_value), fill_value=vocab.token_to_ix[SpecialToken.Pad.value], dtype=np.int16)
 
         # print([vocab.tokens[token_ix] for token_ix in values[indices[0]:indices[0]+lengths[0]]])
 
-        for bucket_sample_ix, (index, length) in enumerate(zip(indices, lengths)):
-            caption: ShortTensor = values[index:index+length]
-
-            put_in_eval: bool = bucket_sample_ix % 100 < int(train_test_split * 100)
-            target_bucket_dict: Dict[int, List[ShortTensor]] = bucket_samples_test if put_in_eval else bucket_samples_train
-            target_bucket: List[ShortTensor] = target_bucket_dict[bucket_value]
-
-            target_bucket.append(caption)
-            # print([vocab.tokens[token_ix] for token_ix in caption])
-            
-            if bucket_sample_ix >= sample_limit_per_bucket-1:
-                break # just taking a handful of samples per bucket for now
-        del values, lengths, indices
+        for bucket_sample_ix, index, length in zip(range(samples_to_take), indices, lengths):
+            caption: NDArray = values[index:index+length]
+            bucket_data[bucket_sample_ix, :length] = caption
+        train_start_ix = int(samples_to_take * train_test_split)
+        bucket_samples_test[bucket_value] = BucketContent(
+            data = bucket_data[:train_start_ix,:],
+            lengths = lengths[:train_start_ix],
+        )
+        bucket_samples_train[bucket_value] = BucketContent(
+            data = bucket_data[train_start_ix:,:],
+            lengths = lengths[train_start_ix:samples_to_take],
+        )
+        del values, lengths, indices, bucket_data
         break # just peeking in first bucket for now
 
     train_dataset = BooruDataset(
-        pad_sequence(
-            sequences=bucket_samples_train[bucket_values[0]],
-            batch_first=True,
-            padding_value=vocab.token_to_ix[SpecialToken.Pad.value],
-        ),
-        lengths=tensor([len(s) for s in bucket_samples_train[bucket_values[0]]], dtype=torch.int16),
+        bucket_content=bucket_samples_train[bucket_value],
     )
     test_dataset = BooruDataset(
-        pad_sequence(
-            sequences=bucket_samples_test[bucket_values[0]],
-            batch_first=True,
-            padding_value=vocab.token_to_ix[SpecialToken.Pad.value],
-        ),
-        lengths=tensor([len(s) for s in bucket_samples_test[bucket_values[0]]], dtype=torch.int16),
+        bucket_content=bucket_samples_test[bucket_value],
     )
     del bucket_samples_train, bucket_samples_test
     tokenized_datasets = DatasetDict({
