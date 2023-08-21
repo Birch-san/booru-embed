@@ -47,9 +47,11 @@ class BooruDataCollatorForT5MLM:
         input_ids: NDArray = np.vstack([e[0] for e in examples])
         lengths: NDArray = np.array([e[1] for e in examples], dtype=np.int16)
 
-        batch_size, expanded_input_length = input_ids.shape
+        # TODO: we could use lengths.max() to make batch smaller in edge-case where every batch item is smaller than bucket max length
+        max_len: int = input_ids.shape[-1]
 
-        mask_indices = np.asarray([self.random_spans_noise_mask(expanded_input_length) for i in range(batch_size)])
+        # TODO: random_spans_noise_mask doesn't seem to work for lengths 30 and below
+        mask_indices = np.vstack([self.random_spans_noise_mask(length, pad_to=max_len) for length in lengths])
         labels_mask = ~mask_indices
 
         input_ids_sentinel: NDArray = self.create_sentinel_ids(mask_indices.astype(np.int8))
@@ -110,7 +112,7 @@ class BooruDataCollatorForT5MLM:
         )
         return input_ids
 
-    def random_spans_noise_mask(self, length: int) -> NDArray:
+    def random_spans_noise_mask(self, length: int, pad_to: int) -> NDArray:
         """This function is copy of `random_spans_helper <https://github.com/google-research/text-to-text-transfer-transformer/blob/84f8bcc14b5f2c03de51bd3587609ba8f6bbd1cd/t5/data/preprocessors.py#L2682>`__ .
 
         Noise mask consisting of random spans of noise tokens.
@@ -171,5 +173,8 @@ class BooruDataCollatorForT5MLM:
         span_start_indicator[span_starts] = True
         span_num = np.cumsum(span_start_indicator)
         is_noise = np.equal(span_num % 2, 1)
-
-        return is_noise[:orig_length]
+        mask: NDArray = is_noise[:orig_length]
+        if length < pad_to:
+            # TODO: can we save an allocation, by just making span_start_indicator allocate a wider tensor to begin with?
+            mask = np.pad(mask, [0, pad_to - length])
+        return mask
