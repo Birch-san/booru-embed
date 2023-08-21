@@ -1,8 +1,9 @@
 from dataclasses import dataclass
-from transformers import PreTrainedTokenizerBase, BatchEncoding
+from transformers import BatchEncoding
 from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
 from typing import List, Dict
 import numpy as np
+from numpy.typing import NDArray
 
 from .booru_dataset import BooruDatum
 
@@ -42,19 +43,17 @@ class BooruDataCollatorForT5MLM:
     decoder_start_token_id: int
 
     def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
-        # convert list to dict and tensorize input
-        batch = BatchEncoding(
-            {k: np.array([examples[i][k] for i in range(len(examples))]) for k, v in examples[0].items()}
-        )
+        # tensorize input
+        input_ids: NDArray = np.vstack([e[0] for e in examples])
+        lengths: NDArray = np.array([e[1] for e in examples], dtype=np.int16)
 
-        input_ids = batch["input_ids"]
         batch_size, expanded_input_length = input_ids.shape
 
         mask_indices = np.asarray([self.random_spans_noise_mask(expanded_input_length) for i in range(batch_size)])
         labels_mask = ~mask_indices
 
-        input_ids_sentinel = self.create_sentinel_ids(mask_indices.astype(np.int8))
-        labels_sentinel = self.create_sentinel_ids(labels_mask.astype(np.int8))
+        input_ids_sentinel: NDArray = self.create_sentinel_ids(mask_indices.astype(np.int8))
+        labels_sentinel: NDArray = self.create_sentinel_ids(labels_mask.astype(np.int8))
 
         batch["input_ids"] = self.filter_input_ids(input_ids, input_ids_sentinel)
         batch["labels"] = self.filter_input_ids(input_ids, labels_sentinel)
@@ -80,7 +79,7 @@ class BooruDataCollatorForT5MLM:
         # TODO: model is receiving ndarray rather than tensor
         return batch
 
-    def create_sentinel_ids(self, mask_indices):
+    def create_sentinel_ids(self, mask_indices: NDArray) -> NDArray:
         """
         Sentinel ids creation given the indices that should be masked.
         The start indices of each mask are replaced by the sentinel ids in increasing
@@ -95,7 +94,7 @@ class BooruDataCollatorForT5MLM:
 
         return sentinel_ids
 
-    def filter_input_ids(self, input_ids, sentinel_ids):
+    def filter_input_ids(self, input_ids: NDArray, sentinel_ids: NDArray) -> NDArray:
         """
         Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
         This will reduce the sequence length from `expanded_inputs_length` to `input_length`.
@@ -111,7 +110,7 @@ class BooruDataCollatorForT5MLM:
         )
         return input_ids
 
-    def random_spans_noise_mask(self, length):
+    def random_spans_noise_mask(self, length: int) -> NDArray:
         """This function is copy of `random_spans_helper <https://github.com/google-research/text-to-text-transfer-transformer/blob/84f8bcc14b5f2c03de51bd3587609ba8f6bbd1cd/t5/data/preprocessors.py#L2682>`__ .
 
         Noise mask consisting of random spans of noise tokens.
@@ -131,20 +130,20 @@ class BooruDataCollatorForT5MLM:
             a boolean tensor with shape [length]
         """
 
-        orig_length = length
+        orig_length: int = length
 
         num_noise_tokens = int(np.round(length * self.noise_density))
-        num_nonnoise_tokens = length - num_noise_tokens
+        num_nonnoise_tokens: int = length - num_noise_tokens
         # avoid degeneracy by ensuring positive numbers of noise and nonnoise tokens.
         num_noise_tokens = min(max(num_noise_tokens, 1), length - 1)
         # num_noise_tokens should be less than num_noise_tokens and num_nonnoise_tokens
         num_noise_spans = int(np.round(min(num_noise_tokens, num_nonnoise_tokens) / self.mean_noise_span_length))
 
         # avoid degeneracy by ensuring positive number of noise spans
-        num_noise_spans = max(num_noise_spans, 1)
+        num_noise_spans: int = max(num_noise_spans, 1)
 
         # pick the lengths of the noise spans and the non-noise spans
-        def _random_segmentation(num_items, num_segments):
+        def _random_segmentation(num_items: int, num_segments: int) -> NDArray:
             """Partition a sequence of items randomly into non-empty segments.
             Args:
                 num_items: an integer scalar > 0
@@ -161,8 +160,8 @@ class BooruDataCollatorForT5MLM:
             _, segment_length = np.unique(segment_id, return_counts=True)
             return segment_length
 
-        noise_span_lengths = _random_segmentation(num_noise_tokens, num_noise_spans)
-        nonnoise_span_lengths = _random_segmentation(num_nonnoise_tokens, num_noise_spans)
+        noise_span_lengths: NDArray = _random_segmentation(num_noise_tokens, num_noise_spans)
+        nonnoise_span_lengths: NDArray = _random_segmentation(num_nonnoise_tokens, num_noise_spans)
 
         interleaved_span_lengths = np.reshape(
             np.stack([nonnoise_span_lengths, noise_span_lengths], axis=1), [num_noise_spans * 2]
