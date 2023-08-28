@@ -859,6 +859,7 @@ class T5PreTrainedModel(PreTrainedModel):
             )
 
         # shift inputs to the right
+        # TODO: why doesn't this use roll()?
         if is_torch_fx_proxy(input_ids):
             # Item assignment is not supported natively for proxies.
             shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), decoder_start_token_id)
@@ -1756,6 +1757,10 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
             labels: LongTensor = labels.to(lm_logits.device)
             # labels needs to be one-hot, broadcastable to `[..., num_classes]`
             labels_oh: LongTensor = one_hot(labels, lm_logits.size(-1))
+
+            # TODO: compare with t5x
+            # https://github.com/google-research/t5x/blob/77d2624e65799e3bea15586eb1d3fe7c63477a92/t5x/models.py#L738
+            # https://github.com/google-research/t5x/blob/main/t5x/losses.py#L50
 
             # https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
             # z_loss encourages the logits:
