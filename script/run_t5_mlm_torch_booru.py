@@ -408,7 +408,11 @@ def main():
     script_dir = Path(dirname(realpath(__file__)))
     repo_root: Path = script_dir.parent
     # populate this folder by running tsv_bucketer.py
-    in_dir = repo_root.joinpath('out_lenbucket')
+    # we used to group prompts into buckets by nearest length,
+    # but since it seems hard to make HF dataloader source batch content from alike buckets:
+    # we've switched to just "everything in the same bucket, <=255 length"
+    # in_dir = repo_root.joinpath('out_lenbucket')
+    in_dir = repo_root.joinpath('out_onebucket')
 
     potential_bucket_dirs: List[str] = listdir(in_dir)
     bucket_values: List[int] = [int(dir.lstrip('b')) for dir in potential_bucket_dirs if bool(re.fullmatch(r'b[0-9]+', dir))]
@@ -445,7 +449,7 @@ def main():
             lengths = lengths[train_start_ix:samples_to_take],
         )
         del values, lengths, indices, bucket_data
-        break # just peeking in first bucket for now
+        break # just peeking in first bucket for now (note: nowadays there's only one bucket anyway)
 
     random_spans_noise_mask_: RandomSpansNoiseMask = partial(
         random_spans_noise_mask,
