@@ -37,6 +37,7 @@ from numpy.typing import NDArray
 from functools import partial
 import torch
 from torch import LongTensor
+from itertools import pairwise
 
 import datasets
 import evaluate
@@ -426,15 +427,12 @@ def main():
     bucket_samples_train: Dict[int, BucketContent] = {}
     bucket_samples_test: Dict[int, BucketContent] = {}
 
-    def get_indices_and_lengths(lengths: NDArray) -> NDArray:
+    def get_indices(lengths: NDArray) -> NDArray:
         indices: LongTensor = torch.from_numpy(lengths).to(device=device)
         indices.cumsum_(0)
+        indices.resize_(indices.shape[0]+1)
         indices = indices.roll(1)
-        indices[0] = 0
-        indices: NDArray = indices.cpu().numpy()
-        # end_before: np.int16 = indices[-1]+lengths[-1]
-        indices_and_lengths: NDArray = np.hstack([np.expand_dims(indices, axis=-1), np.expand_dims(lengths, axis=-1)])
-        return indices_and_lengths
+        return indices.cpu().numpy()
 
     train_test_split = 0.1
     # for testing
@@ -447,25 +445,23 @@ def main():
         lengths = lengths[:samples_to_take]
         train_start_ix = int(samples_to_take * train_test_split)
 
-        test_indices_and_lengths: NDArray = get_indices_and_lengths(lengths[:train_start_ix])
-        train_indices_and_lengths: NDArray = get_indices_and_lengths(lengths[train_start_ix:samples_to_take])
+        test_indices: NDArray = get_indices(lengths[:train_start_ix])
+        train_indices: NDArray = get_indices(lengths[train_start_ix:samples_to_take])
         del lengths
 
-        test_values_until: np.int16 = test_indices_and_lengths[-1,0] + test_indices_and_lengths[-1,1]
         bucket_samples_test[bucket_value] = BucketContent(
-            values = values[:test_values_until],
-            indices_and_lengths = test_indices_and_lengths,
+            values = values[:test_indices[-1]],
+            indices = test_indices,
         )
-        train_values_until: np.int16 = test_values_until + train_indices_and_lengths[-1,0] + train_indices_and_lengths[-1,1]
         bucket_samples_train[bucket_value] = BucketContent(
-            values = values[test_values_until:train_values_until],
-            indices_and_lengths = train_indices_and_lengths,
+            values = values[test_indices[-1]:test_indices[-1]+train_indices[-1]],
+            indices = train_indices,
         )
-        del values, test_indices_and_lengths, train_indices_and_lengths
+        del values, test_indices, train_indices
         break # just peeking in first bucket for now (note: nowadays there's only one bucket anyway)
 
-    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_train[bucket_value].values[il[0]:il[0]+il[1]]] for il in bucket_samples_train[bucket_value].indices_and_lengths]
-    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_test[bucket_value].values[il[0]:il[0]+il[1]]] for il in bucket_samples_test[bucket_value].indices_and_lengths]
+    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_test[bucket_value].values[start:end]] for start, end in pairwise(bucket_samples_test[bucket_value].indices)]
+    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_train[bucket_value].values[start:end]] for start, end in pairwise(bucket_samples_train[bucket_value].indices)]
 
     random_spans_noise_mask_: RandomSpansNoiseMask = partial(
         random_spans_noise_mask,

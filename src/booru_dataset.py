@@ -10,10 +10,10 @@ class BucketContent(NamedTuple):
   """
   Ragged array
   values (`NDArray`): (batch, sample) tokenized
-  indices_and_lengths (`NDArray`): (batch, 2) each row is an [index, length] 2-tuple
+  indices (`NDArray`): (batch+1)
   """
   values: NDArray
-  indices_and_lengths: NDArray
+  indices: NDArray
 
 class BooruDatum(NamedTuple):
   datum: NDArray
@@ -25,14 +25,13 @@ class BooruDataset(Dataset[BooruDatum]):
   random_spans_noise_mask: RandomSpansNoiseMask
 
   def __getitem__(self, index: int) -> BooruDatum:
-    index_and_length: NDArray = self.bucket_content.indices_and_lengths[index]
-    index, length = index_and_length
-    datum: NDArray = self.bucket_content.values[index:index+length]
-    mask_indices: NDArray = self.random_spans_noise_mask(length=length)
+    start, end = self.bucket_content.indices[index:index+2]
+    datum: NDArray = self.bucket_content.values[start:end]
+    mask_indices: NDArray = self.random_spans_noise_mask(length=end-start)
     return BooruDatum(
       datum=datum,
       mask_indices=mask_indices,
     )
 
   def __len__(self) -> int:
-    return self.bucket_content.indices_and_lengths.shape[0]
+    return self.bucket_content.indices.shape[0]-1
