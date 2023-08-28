@@ -34,6 +34,7 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, List
 import numpy as np
 from numpy.typing import NDArray
+from functools import partial
 
 import datasets
 import evaluate
@@ -59,7 +60,8 @@ from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.compute_input_and_target_lengths import compute_input_and_target_lengths
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
-from src.booru_dataset import BooruDataset, BucketContent
+from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
+from src.random_spans_noise_mask import random_spans_noise_mask
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -445,11 +447,20 @@ def main():
         del values, lengths, indices, bucket_data
         break # just peeking in first bucket for now
 
+    random_spans_noise_mask_: RandomSpansNoiseMask = partial(
+        random_spans_noise_mask,
+        noise_density=data_args.mlm_probability,
+        mean_noise_span_length=data_args.mean_noise_span_length,
+    )
     train_dataset = BooruDataset(
         bucket_content=bucket_samples_train[bucket_value],
+        random_spans_noise_mask=random_spans_noise_mask_,
+        pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
     )
     test_dataset = BooruDataset(
         bucket_content=bucket_samples_test[bucket_value],
+        random_spans_noise_mask=random_spans_noise_mask_,
+        pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
     )
     del bucket_samples_train, bucket_samples_test
     tokenized_datasets = DatasetDict({
@@ -499,8 +510,6 @@ def main():
         eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
         pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
         sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
-        noise_density=data_args.mlm_probability,
-        mean_noise_span_length=data_args.mean_noise_span_length,
         input_length=max_seq_length,
         target_length=targets_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
