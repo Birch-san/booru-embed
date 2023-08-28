@@ -35,6 +35,8 @@ from typing import Optional, Dict, List
 import numpy as np
 from numpy.typing import NDArray
 from functools import partial
+import torch
+from torch import LongTensor
 
 import datasets
 import evaluate
@@ -404,6 +406,8 @@ def main():
                 f"model ({model_max_ctx_len}). Using max_seq_length={model_max_ctx_len}."
             )
         max_seq_length = min(data_args.max_seq_length, model_max_ctx_len)
+    
+    device = torch.device('cuda')
 
     script_dir = Path(dirname(realpath(__file__)))
     repo_root: Path = script_dir.parent
@@ -422,34 +426,46 @@ def main():
     bucket_samples_train: Dict[int, BucketContent] = {}
     bucket_samples_test: Dict[int, BucketContent] = {}
 
+    def get_indices_and_lengths(lengths: NDArray) -> NDArray:
+        indices: LongTensor = torch.from_numpy(lengths).to(device=device)
+        indices.cumsum_(0)
+        indices = indices.roll(1)
+        indices[0] = 0
+        indices: NDArray = indices.cpu().numpy()
+        # end_before: np.int16 = indices[-1]+lengths[-1]
+        indices_and_lengths: NDArray = np.hstack([np.expand_dims(indices, axis=-1), np.expand_dims(lengths, axis=-1)])
+        return indices_and_lengths
+
     train_test_split = 0.1
     # for testing
     sample_limit_per_bucket = 100
     for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
         values: NDArray = np.load(join(bucket_dir, 'values.npy'))
         lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
-        indices: NDArray = np.roll(np.cumsum(lengths), 1)
-        indices[0] = 0
-
         samples_to_take = min(values.shape[0], sample_limit_per_bucket)
-        bucket_data: NDArray = np.full((samples_to_take, bucket_value), fill_value=vocab.token_to_ix[SpecialToken.Pad.value], dtype=np.int16)
 
-        # print([vocab.tokens[token_ix] for token_ix in values[indices[0]:indices[0]+lengths[0]]])
-
-        for bucket_sample_ix, index, length in zip(range(samples_to_take), indices, lengths):
-            caption: NDArray = values[index:index+length]
-            bucket_data[bucket_sample_ix, :length] = caption
+        lengths = lengths[:samples_to_take]
         train_start_ix = int(samples_to_take * train_test_split)
+
+        test_indices_and_lengths: NDArray = get_indices_and_lengths(lengths[:train_start_ix])
+        train_indices_and_lengths: NDArray = get_indices_and_lengths(lengths[train_start_ix:samples_to_take])
+        del lengths
+
+        test_values_until: np.int16 = test_indices_and_lengths[-1,0] + test_indices_and_lengths[-1,1]
         bucket_samples_test[bucket_value] = BucketContent(
-            data = bucket_data[:train_start_ix,:],
-            lengths = lengths[:train_start_ix],
+            values = values[:test_values_until],
+            indices_and_lengths = test_indices_and_lengths,
         )
+        train_values_until: np.int16 = test_values_until + train_indices_and_lengths[-1,0] + train_indices_and_lengths[-1,1]
         bucket_samples_train[bucket_value] = BucketContent(
-            data = bucket_data[train_start_ix:,:],
-            lengths = lengths[train_start_ix:samples_to_take],
+            values = values[test_values_until:train_values_until],
+            indices_and_lengths = train_indices_and_lengths,
         )
-        del values, lengths, indices, bucket_data
+        del values, test_indices_and_lengths, train_indices_and_lengths
         break # just peeking in first bucket for now (note: nowadays there's only one bucket anyway)
+
+    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_train[bucket_value].values[il[0]:il[0]+il[1]]] for il in bucket_samples_train[bucket_value].indices_and_lengths]
+    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_test[bucket_value].values[il[0]:il[0]+il[1]]] for il in bucket_samples_test[bucket_value].indices_and_lengths]
 
     random_spans_noise_mask_: RandomSpansNoiseMask = partial(
         random_spans_noise_mask,
@@ -459,12 +475,11 @@ def main():
     train_dataset = BooruDataset(
         bucket_content=bucket_samples_train[bucket_value],
         random_spans_noise_mask=random_spans_noise_mask_,
-        pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
     )
     test_dataset = BooruDataset(
         bucket_content=bucket_samples_test[bucket_value],
         random_spans_noise_mask=random_spans_noise_mask_,
-        pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
+        # pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
     )
     del bucket_samples_train, bucket_samples_test
     tokenized_datasets = DatasetDict({

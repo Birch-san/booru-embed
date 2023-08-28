@@ -2,47 +2,37 @@ from dataclasses import dataclass
 from torch.utils.data import Dataset
 from numpy.typing import NDArray
 from typing import NamedTuple, Protocol
-import numpy as np
 
 class RandomSpansNoiseMask(Protocol):
   def __call__(self, length: int) -> NDArray: ...
 
-# class PadArray(Protocol):
-#   def __call__(self, shape: int) -> NDArray: ...
-
 class BucketContent(NamedTuple):
   """
-  data (`NDArray`): (batch, sample) tokenized, padded
-  lengths (`NDArray`): (batch, length)
+  Ragged array
+  values (`NDArray`): (batch, sample) tokenized
+  indices_and_lengths (`NDArray`): (batch, 2) each row is an [index, length] 2-tuple
   """
-  data: NDArray
-  lengths: NDArray
+  values: NDArray
+  indices_and_lengths: NDArray
 
 class BooruDatum(NamedTuple):
   datum: NDArray
-  length: np.int16
   mask_indices: NDArray
 
 @dataclass
 class BooruDataset(Dataset[BooruDatum]):
   bucket_content: BucketContent
   random_spans_noise_mask: RandomSpansNoiseMask
-  eos_token_id: int
-
-  # def __postinit__(self):
-  #   if self.eos_token_id == 0:
-  #     # we can use ndarray#resize to pad more cheaply
-  #     pass
 
   def __getitem__(self, index: int) -> BooruDatum:
-    length: np.int16 = self.bucket_content.lengths[index]
-    # padded_mask_indices: NDArray = 
+    index_and_length: NDArray = self.bucket_content.indices_and_lengths[index]
+    index, length = index_and_length
+    datum: NDArray = self.bucket_content.values[index:index+length]
     mask_indices: NDArray = self.random_spans_noise_mask(length=length)
     return BooruDatum(
-      datum=self.bucket_content.data[index],
-      length=self.bucket_content.lengths[index],
+      datum=datum,
       mask_indices=mask_indices,
     )
 
   def __len__(self) -> int:
-    return self.bucket_content.lengths.shape[0]
+    return self.bucket_content.indices_and_lengths.shape[0]
