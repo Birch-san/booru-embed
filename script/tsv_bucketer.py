@@ -27,12 +27,14 @@ assert len(vocab.tokens) < (1 << 15)
 #   t = torch.tensor([17, 36, 55, 73, 92, 111, 129, 148, 167, 185, 204, 223, 241], dtype=torch.int32)
 #   t[:-1] + (t.diff()/2).int()
 # let's round the final up to 255
-buckets: IntTensor = tensor([26,  45,  64,  82, 101, 120, 138, 157, 176, 194, 213, 232, 255], dtype=torch.int16)
+# buckets: IntTensor = tensor([26,  45,  64,  82, 101, 120, 138, 157, 176, 194, 213, 232, 255], dtype=torch.int16)
+# actually I have no idea how to make HF dataloader source batches from a variety of buckets, so let's give up on ctx-len bucketing ¬_¬
+buckets: IntTensor = tensor([255], dtype=torch.int16)
 max_tokens: int = buckets.max().item()
 
 tsv_record_to_token_ids: TsvRecordToTokenIds = make_tsv_record_to_token_ids(vocab, do_shuffle=True, max_tokens=max_tokens, statistics=None)
 
-out_dir = 'out_lenbucket'
+out_dir = 'out_onebucket'
 makedirs(out_dir, exist_ok=True)
 
 value_buckets: List[List[NDArray]] = [[] for _ in buckets]

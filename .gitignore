@@ -3,11 +3,14 @@ __pycache__/
 /out/word-prevalence.nocount.txt
 /out/split-word-prevalence.txt
 /out/split-word-prevalence.nocount.txt
+/out/prevalence-considerations.txt
 /out_prevalence_category/*.txt
 /out_lenbucket/
+/out_onebucket/
 /out-t5-mlm-flax/
 /out-t5-mlm-torch/
 /out-t5-mlm-torch-2/
 /out-mlm-torch/
 /out_tokenizer/
 runs/
+.DS_Store

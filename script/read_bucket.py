@@ -6,6 +6,7 @@ import re
 # import torch
 import numpy as np
 from numpy.typing import NDArray
+from tqdm import tqdm
 
 from src.vocab import Vocab
 
@@ -25,6 +26,21 @@ bucket_values.sort()
 # buckets = torch.tensor(bucket_values, dtype=torch.int16)
 bucket_dirs: List[str] = [join(in_dir, f'b{val}') for val in bucket_values]
 
+# bucket lengths:
+# 21516
+# 509677
+# 1104165
+# 1232792
+# 1164978
+# 834072
+# 486213
+# 281165
+# 143312
+# 70007
+# 39342
+# 21123
+# 13500
+# total=5921862
 for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
   values: NDArray = np.load(join(bucket_dir, 'values.npy'))
   lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
@@ -34,8 +50,9 @@ for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
 
   # print([vocab.tokens[token_ix] for token_ix in values[indices[0]:indices[0]+lengths[0]]])
 
-  for index, length in zip(indices, lengths):
+  for index, length in tqdm(zip(indices, lengths), total=lengths.shape[-1], unit='caption'):
     caption: NDArray = values[index:index+length]
-    print([vocab.tokens[token_ix] for token_ix in caption])
+    decoded: List[str] = [vocab.tokens[token_ix] for token_ix in caption]
+    # print([vocab.tokens[token_ix] for token_ix in caption])
     pass
   # break # just peeking in first bucket for now
