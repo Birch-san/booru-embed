@@ -5,7 +5,8 @@ from typing import List, Dict
 import numpy as np
 from numpy.typing import NDArray
 import torch
-from torch import ByteTensor, BoolTensor
+from torch import ByteTensor, BoolTensor, LongTensor, arange
+from torch.nn.functional import pad
 
 from .booru_dataset import BooruDatum
 
@@ -65,11 +66,20 @@ class BooruDataCollatorForT5MLM:
         labels_sentinel: NDArray = self.create_sentinel_ids(labels_mask.astype(np.int8))
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
-        input_ids_sentinel_: ByteTensor = self.create_sentinel_ids_torch(mask_indices_t)
-        labels_sentinel_: ByteTensor = self.create_sentinel_ids_torch(1-mask_indices_t)
+        input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids_torch(mask_indices_t)
+        labels_sentinel_t: ByteTensor = self.create_sentinel_ids_torch(1-mask_indices_t)
 
-        batch["input_ids"] = self.filter_input_ids(input_ids, input_ids_sentinel)
-        batch["labels"] = self.filter_input_ids(input_ids, labels_sentinel)
+        # numpy imply doesn't support batch of varied-length samples
+        # it seems to somehow obliterate our final conv token and EOS (or maybe that got masked-out)
+        # and puts an EOS in wrong place (end of padding)
+        batch_input_ids: NDArray = self.filter_input_ids(input_ids[:1], input_ids_sentinel[:1])
+        batch_labels: NDArray = self.filter_input_ids(input_ids[:1], labels_sentinel[:1])
+
+        # TODO: maybe insertion of conv and EOS tokens should be job of collator
+        # so that they can't be masked-out
+        input_ids_t: LongTensor = torch.from_numpy(input_ids).to(self.device)
+        batch_input_ids_t: ByteTensor = self.filter_input_ids_torch(input_ids_t, input_ids_sentinel_t)
+        batch_labels_t: ByteTensor = self.filter_input_ids_torch(input_ids_t, labels_sentinel_t)
 
         if batch["input_ids"].shape[-1] != self.input_length:
             raise ValueError(
@@ -121,6 +131,26 @@ class BooruDataCollatorForT5MLM:
         sentinel_ids -= mask_indices - start_indices
 
         return sentinel_ids
+
+    def filter_input_ids_torch(self, input_ids: LongTensor, sentinel_ids: ByteTensor) -> LongTensor:
+        """
+        Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
+        This will reduce the sequence length from `expanded_inputs_length` to `input_length`.
+        """
+        # batch_size: int = input_ids.shape[0]
+
+        input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids != 0, input_ids)
+        # input_ids tokens and sentinel tokens are >= 0, tokens < 0 are
+        # masked tokens coming after sentinel tokens and should be removed
+        input_ids: ByteTensor = input_ids_full.gather(-1, arange(input_ids_full.shape[-1], device=self.device).where(input_ids_full >= 0, 0))
+        # input_ids_eos: ByteTensor = pad(input_ids, pad=(0, 1), mode='constant', value=self.pad_token_id)
+        # input_ids_eos.argmin(-1) tells you where to insert eos_token,
+        # but actually it's the same as lengths
+        # and actually we already inserted eos token
+        # input_ids = np.concatenate(
+        #     [input_ids, np.full((batch_size, 1), self.eos_token_id, dtype=np.int32)], axis=-1
+        # )
+        return input_ids
 
     def filter_input_ids(self, input_ids: NDArray, sentinel_ids: NDArray) -> NDArray:
         """
