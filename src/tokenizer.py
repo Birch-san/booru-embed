@@ -60,7 +60,7 @@ def make_tsv_record_to_token_ids(
 
     general_token_ids_len: int = sum((len(x) for x in general_labels)) + len(general_labels)
     # compute length first, as a fast-path to discard long prompts before we commit to the cost of shuffling
-    token_len: int = 10 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
+    token_len: int = 7 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
     if token_len > max_tokens:
       # I mean we could drop labels to salvage it, but probably too many subjects are being portrayed to get a good embedding anyway
       return None
