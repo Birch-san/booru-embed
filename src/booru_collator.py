@@ -7,6 +7,7 @@ from numpy.typing import NDArray
 import torch
 from torch import ByteTensor, BoolTensor, LongTensor, arange
 from torch.nn.functional import pad
+from torch.nn.utils.rnn import pad_sequence
 
 from .booru_dataset import BooruDatum
 from .vocab import Vocab
@@ -61,6 +62,8 @@ class BooruDataCollatorForT5MLM:
             caption_len = caption.shape[0]
             input_ids[ix, :caption_len] = caption
             mask_indices[ix, :caption_len] = mask_indices_
+        
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         # TODO: random_spans_noise_mask doesn't seem to work for lengths 30 and below
         labels_mask = ~mask_indices
@@ -145,7 +148,12 @@ class BooruDataCollatorForT5MLM:
         input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids != 0, input_ids)
         # input_ids tokens and sentinel tokens are >= 0, tokens < 0 are
         # masked tokens coming after sentinel tokens and should be removed
-        input_ids: ByteTensor = input_ids_full.gather(-1, arange(input_ids_full.shape[-1], device=self.device).where(input_ids_full >= 0, 0))
+        input_ids: ByteTensor = pad_sequence([
+            row.masked_select(row >= 0) for row in input_ids_full
+        ], batch_first=True, padding_value=self.pad_token_id)
+
+        # TODO: insert EOS.. but do input_ids and labels both need EOS?
+
         # input_ids_eos: ByteTensor = pad(input_ids, pad=(0, 1), mode='constant', value=self.pad_token_id)
         # input_ids_eos.argmin(-1) tells you where to insert eos_token,
         # but actually it's the same as lengths
@@ -166,6 +174,7 @@ class BooruDataCollatorForT5MLM:
         # input_ids tokens and sentinel tokens are >= 0, tokens < 0 are
         # masked tokens coming after sentinel tokens and should be removed
         input_ids = input_ids_full[input_ids_full >= 0].reshape((batch_size, -1))
+        # this usually inserts EOS in the wrong place (i.e. post-padding)
         input_ids = np.concatenate(
             [input_ids, np.full((batch_size, 1), self.eos_token_id, dtype=np.int32)], axis=-1
         )
