@@ -7,6 +7,7 @@ __pycache__/
 /out_prevalence_category/*.txt
 /out_lenbucket/
 /out_onebucket/
+/out_onebucket_cnv/
 /out-t5-mlm-flax/
 /out-t5-mlm-torch/
 /out-t5-mlm-torch-2/
