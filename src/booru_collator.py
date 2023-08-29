@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from transformers import BatchEncoding
 from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
-from typing import List, Dict
+from typing import List, Optional
 import numpy as np
 from numpy.typing import NDArray
 import torch
@@ -9,6 +9,7 @@ from torch import ByteTensor, BoolTensor, LongTensor, arange
 from torch.nn.functional import pad
 
 from .booru_dataset import BooruDatum
+from .vocab import Vocab
 
 @dataclass
 class BooruDataCollatorForT5MLM:
@@ -42,6 +43,8 @@ class BooruDataCollatorForT5MLM:
     target_length: int
     pad_token_id: int
     decoder_start_token_id: int
+    # for debug (enables decoding of captions)
+    vocab: Optional[Vocab] = None
     device: torch.device = field(init=False)
 
     def __post_init__(self):

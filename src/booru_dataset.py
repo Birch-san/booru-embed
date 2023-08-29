@@ -1,7 +1,9 @@
 from dataclasses import dataclass
 from torch.utils.data import Dataset
 from numpy.typing import NDArray
-from typing import NamedTuple, Protocol
+from typing import NamedTuple, Protocol, Optional
+
+from .vocab import Vocab
 
 class RandomSpansNoiseMask(Protocol):
   def __call__(self, length: int) -> NDArray: ...
@@ -23,6 +25,8 @@ class BooruDatum(NamedTuple):
 class BooruDataset(Dataset[BooruDatum]):
   bucket_content: BucketContent
   random_spans_noise_mask: RandomSpansNoiseMask
+  # for debug (enables decoding of captions)
+  vocab: Optional[Vocab] = None
 
   def __getitem__(self, index: int) -> BooruDatum:
     start, end = self.bucket_content.indices[index:index+2]

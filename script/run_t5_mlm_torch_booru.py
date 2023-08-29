@@ -471,11 +471,14 @@ def main():
     train_dataset = BooruDataset(
         bucket_content=bucket_samples_train[bucket_value],
         random_spans_noise_mask=random_spans_noise_mask_,
+        # vocab is optional, to aid in debugging (enables decoding of a sample)
+        vocab=vocab,
     )
     test_dataset = BooruDataset(
         bucket_content=bucket_samples_test[bucket_value],
         random_spans_noise_mask=random_spans_noise_mask_,
-        # pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
+        # vocab is optional, to aid in debugging (enables decoding of a sample)
+        vocab=vocab,
     )
     del bucket_samples_train, bucket_samples_test
     tokenized_datasets = DatasetDict({
@@ -528,6 +531,8 @@ def main():
         input_length=max_seq_length,
         target_length=targets_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
+        # vocab is optional, to aid in debugging (enables decoding of a sample)
+        vocab=vocab,
     )
 
     # Initialize our Trainer
