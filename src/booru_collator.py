@@ -1,9 +1,11 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from transformers import BatchEncoding
 from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
 from typing import List, Dict
 import numpy as np
 from numpy.typing import NDArray
+import torch
+from torch import ByteTensor, BoolTensor
 
 from .booru_dataset import BooruDatum
 
@@ -39,22 +41,32 @@ class BooruDataCollatorForT5MLM:
     target_length: int
     pad_token_id: int
     decoder_start_token_id: int
+    device: torch.device = field(init=False)
+
+    def __post_init__(self):
+        self.device = torch.device('cuda')
 
     def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
         # tensorize input
-        input_ids: NDArray = np.vstack([e[0] for e in examples])
-        lengths: NDArray = np.hstack([e[1] for e in examples], dtype=np.int16)
-        mask_indices: NDArray = np.vstack([e[2] for e in examples], dtype=np.int16)
+        lengths: NDArray = np.hstack([e[0].shape[0] for e in examples], dtype=np.int16)
+        max_len: np.int16 = lengths.max()
 
-        # TODO: we could use lengths.max() to make batch smaller in edge-case where every batch item is smaller than bucket max length
-        max_len: int = input_ids.shape[-1]
+        input_ids: NDArray = np.full((len(examples), max_len), fill_value=self.pad_token_id, dtype=np.int16)
+        mask_indices: NDArray = np.full((len(examples), max_len), fill_value=False, dtype=np.bool_)
+        for ix, (caption, mask_indices_) in enumerate(examples):
+            caption_len = caption.shape[0]
+            input_ids[ix, :caption_len] = caption
+            mask_indices[ix, :caption_len] = mask_indices_
 
         # TODO: random_spans_noise_mask doesn't seem to work for lengths 30 and below
-        mask_indices = np.vstack([self.random_spans_noise_mask(length, pad_to=max_len) for length in lengths])
         labels_mask = ~mask_indices
 
         input_ids_sentinel: NDArray = self.create_sentinel_ids(mask_indices.astype(np.int8))
         labels_sentinel: NDArray = self.create_sentinel_ids(labels_mask.astype(np.int8))
+
+        mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
+        input_ids_sentinel_: ByteTensor = self.create_sentinel_ids_torch(mask_indices_t)
+        labels_sentinel_: ByteTensor = self.create_sentinel_ids_torch(1-mask_indices_t)
 
         batch["input_ids"] = self.filter_input_ids(input_ids, input_ids_sentinel)
         batch["labels"] = self.filter_input_ids(input_ids, labels_sentinel)
@@ -79,6 +91,21 @@ class BooruDataCollatorForT5MLM:
 
         # TODO: model is receiving ndarray rather than tensor
         return batch
+
+    def create_sentinel_ids_torch(self, mask_indices: ByteTensor) -> ByteTensor:
+        """
+        Sentinel ids creation given the indices that should be masked.
+        The start indices of each mask are replaced by the sentinel ids in increasing
+        order. Consecutive mask indices to be deleted are replaced with `-1`.
+        """
+        start_indices: ByteTensor = mask_indices - mask_indices.roll(1, dims=-1) & mask_indices
+        start_indices[:, 0] = mask_indices[:, 0]
+
+        sentinel_ids: ByteTensor = start_indices.cumsum(-1, dtype=torch.int8).where(start_indices != 0, start_indices)
+        sentinel_ids = (self.sentinel_start_ix + sentinel_ids).where(sentinel_ids != 0, 0)
+        sentinel_ids -= mask_indices - start_indices
+
+        return sentinel_ids
 
     def create_sentinel_ids(self, mask_indices: NDArray) -> NDArray:
         """
