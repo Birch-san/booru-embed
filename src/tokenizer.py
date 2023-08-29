@@ -76,7 +76,7 @@ def make_tsv_record_to_token_ids(
     assert len(general_token_ids) == general_token_ids_len
 
     token_ixs: List[int] = [
-      cnv_token_id,
+      # cnv_token_id, # commenting-out for now whilst we figure out how conv tokens should interact with collator and MLM objective
       rating_token_ids[rating],
       char_token_id,
       *char_token_ids,
@@ -89,8 +89,8 @@ def make_tsv_record_to_token_ids(
       *general_token_ids,
       meta_token_id,
       *meta_token_ids,
-      eos_token_id,
-      cnv_token_id,
+      # eos_token_id, # EOS is actually meant to be introduced at end of prompt + continuation. we should insert it in the collator.
+      # cnv_token_id, # commenting-out for now whilst we figure out how conv tokens should interact with collator and MLM objective
     ]
     # print([vocab.tokens[token_ix] for token_ix in token_ixs])
     assert len(token_ixs) == token_len
