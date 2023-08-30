@@ -5,7 +5,7 @@ from typing import List, Optional
 import numpy as np
 from numpy.typing import NDArray
 import torch
-from torch import ByteTensor, BoolTensor, LongTensor, arange
+from torch import ByteTensor, BoolTensor, LongTensor, arange, full
 from torch.nn.functional import pad
 from torch.nn.utils.rnn import pad_sequence
 
@@ -50,6 +50,7 @@ class BooruDataCollatorForT5MLM:
 
     def __post_init__(self):
         self.device = torch.device('cuda')
+        assert self.pad_token_id == 0, 'we currently employ in filter_input_ids a condition which ignores both -1 tokens and pad tokens via the criteria `<= 0` (on the basis it may be cheaper than `!= -1 & != self.pad_token_id`). to use a non-zero pad_token_id: we would need to remove this optimization.'
 
     def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
         # tensorize input
@@ -143,25 +144,20 @@ class BooruDataCollatorForT5MLM:
         Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
         This will reduce the sequence length from `expanded_inputs_length` to `input_length`.
         """
-        # batch_size: int = input_ids.shape[0]
+        input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids.bool(), input_ids)
+        longest_after_masking: int = (input_ids_full > self.pad_token_id).sum(-1).max().item()
+        retaineds: ByteTensor = full(
+            (input_ids_full.size(0), longest_after_masking+1),
+            fill_value=self.pad_token_id,
+            dtype=input_ids.dtype,
+            device=input_ids.device,
+        )
+        for out_row, in_row, retain in zip(retaineds, input_ids_full, input_ids_full > self.pad_token_id):
+            retained: ByteTensor = in_row.masked_select(retain)
+            out_row[:retained.size(-1)] = retained
+            out_row[retained.size(-1)] = self.eos_token_id
 
-        input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids != 0, input_ids)
-        # input_ids tokens and sentinel tokens are >= 0, tokens < 0 are
-        # masked tokens coming after sentinel tokens and should be removed
-        input_ids: ByteTensor = pad_sequence([
-            row.masked_select(row >= 0) for row in input_ids_full
-        ], batch_first=True, padding_value=self.pad_token_id)
-
-        # TODO: insert EOS.. but do input_ids and labels both need EOS?
-
-        # input_ids_eos: ByteTensor = pad(input_ids, pad=(0, 1), mode='constant', value=self.pad_token_id)
-        # input_ids_eos.argmin(-1) tells you where to insert eos_token,
-        # but actually it's the same as lengths
-        # and actually we already inserted eos token
-        # input_ids = np.concatenate(
-        #     [input_ids, np.full((batch_size, 1), self.eos_token_id, dtype=np.int32)], axis=-1
-        # )
-        return input_ids
+        return retaineds
 
     def filter_input_ids(self, input_ids: NDArray, sentinel_ids: NDArray) -> NDArray:
         """
