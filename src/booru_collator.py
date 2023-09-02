@@ -1,16 +1,18 @@
 from dataclasses import dataclass, field
 from transformers import BatchEncoding
-from transformers.models.t5.modeling_flax_t5 import shift_tokens_right
-from typing import List, Optional
+from typing import List, Optional, TypedDict
 import numpy as np
 from numpy.typing import NDArray
 import torch
-from torch import ByteTensor, BoolTensor, LongTensor, arange, full
-from torch.nn.functional import pad
-from torch.nn.utils.rnn import pad_sequence
+from torch import ByteTensor, BoolTensor, ShortTensor, full
 
 from .booru_dataset import BooruDatum
 from .vocab import Vocab
+
+class BooruBatchData(TypedDict):
+    input_ids: ShortTensor
+    attention_mask: BoolTensor
+    labels: ShortTensor
 
 @dataclass
 class BooruDataCollatorForT5MLM:
@@ -24,14 +26,6 @@ class BooruDataCollatorForT5MLM:
     Args:
         eos_token_id (:obj:`int`)
         sentinel_start_ix (:obj:`int`)
-        noise_density (:obj:`float`):
-            The probability with which to (randomly) mask tokens in the input.
-        mean_noise_span_length (:obj:`float`):
-            The average span length of the masked tokens.
-        input_length (:obj:`int`):
-            The expected input length after masking.
-        target_length (:obj:`int`):
-            The expected target length after masking.
         pad_token_id: (:obj:`int`):
             The pad token id of the model
         decoder_start_token_id: (:obj:`int):
@@ -40,8 +34,6 @@ class BooruDataCollatorForT5MLM:
 
     eos_token_id: int
     sentinel_start_ix: int
-    input_length: int
-    target_length: int
     pad_token_id: int
     decoder_start_token_id: int
     # for debug (enables decoding of captions)
@@ -66,50 +58,33 @@ class BooruDataCollatorForT5MLM:
         
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
-        # TODO: random_spans_noise_mask doesn't seem to work for lengths 30 and below
-        labels_mask = ~mask_indices
-
-        input_ids_sentinel: NDArray = self.create_sentinel_ids(mask_indices.astype(np.int8))
-        labels_sentinel: NDArray = self.create_sentinel_ids(labels_mask.astype(np.int8))
-
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
-        input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids_torch(mask_indices_t)
-        labels_sentinel_t: ByteTensor = self.create_sentinel_ids_torch(1-mask_indices_t)
-
-        # numpy imply doesn't support batch of varied-length samples
-        # it seems to somehow obliterate our final conv token and EOS (or maybe that got masked-out)
-        # and puts an EOS in wrong place (end of padding)
-        batch_input_ids: NDArray = self.filter_input_ids(input_ids[:1], input_ids_sentinel[:1])
-        batch_labels: NDArray = self.filter_input_ids(input_ids[:1], labels_sentinel[:1])
+        input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
+        labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
 
         # TODO: maybe insertion of conv and EOS tokens should be job of collator
         # so that they can't be masked-out
-        input_ids_t: LongTensor = torch.from_numpy(input_ids).to(self.device)
-        batch_input_ids_t: ByteTensor = self.filter_input_ids_torch(input_ids_t, input_ids_sentinel_t)
-        batch_labels_t: ByteTensor = self.filter_input_ids_torch(input_ids_t, labels_sentinel_t)
+        input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
+        # TODO: these are still on-GPU, and this is multiprocess. does that leak? can they be sent inter-process? is a queue required?
+        batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t)
+        batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t)
 
-        if batch["input_ids"].shape[-1] != self.input_length:
-            raise ValueError(
-                f"`input_ids` are incorrectly preprocessed. `input_ids` length is {batch['input_ids'].shape[-1]}, but"
-                f" should be {self.input_length}."
-            )
+        # TODO: should we introduce conv tokens inside the model itself? (encoder could do it)
 
-        if batch["labels"].shape[-1] != self.target_length:
-            raise ValueError(
-                f"`labels` are incorrectly preprocessed. `labels` length is {batch['labels'].shape[-1]}, but should be"
-                f" {self.target_length}."
-            )
+        attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
 
-        # to check that tokens are correctly preprocessed, one can run `self.tokenizer.batch_decode(input_ids)` and `self.tokenizer.batch_decode(labels)` here...
-        # TODO: model supports doing this internally, so we could get rid of this
-        batch["decoder_input_ids"] = shift_tokens_right(
-            batch["labels"], self.pad_token_id, self.decoder_start_token_id
+        data = BooruBatchData(
+            input_ids=batch_input_ids.detach().cpu(),
+            attention_mask=attention_mask.detach().cpu(),
+            labels=batch_labels.detach().cpu(),
+        )
+        batch_encoding = BatchEncoding(
+            data=data,
         )
 
-        # TODO: model is receiving ndarray rather than tensor
-        return batch
+        return batch_encoding
 
-    def create_sentinel_ids_torch(self, mask_indices: ByteTensor) -> ByteTensor:
+    def create_sentinel_ids(self, mask_indices: ByteTensor) -> ByteTensor:
         """
         Sentinel ids creation given the indices that should be masked.
         The start indices of each mask are replaced by the sentinel ids in increasing
@@ -124,25 +99,10 @@ class BooruDataCollatorForT5MLM:
 
         return sentinel_ids
 
-    def create_sentinel_ids(self, mask_indices: NDArray) -> NDArray:
-        """
-        Sentinel ids creation given the indices that should be masked.
-        The start indices of each mask are replaced by the sentinel ids in increasing
-        order. Consecutive mask indices to be deleted are replaced with `-1`.
-        """
-        start_indices = mask_indices - np.roll(mask_indices, 1, axis=-1) * mask_indices
-        start_indices[:, 0] = mask_indices[:, 0]
-
-        sentinel_ids = np.where(start_indices != 0, np.cumsum(start_indices, axis=-1), start_indices)
-        sentinel_ids = np.where(sentinel_ids != 0, self.sentinel_start_ix + sentinel_ids, 0)
-        sentinel_ids -= mask_indices - start_indices
-
-        return sentinel_ids
-
-    def filter_input_ids_torch(self, input_ids: LongTensor, sentinel_ids: ByteTensor) -> LongTensor:
+    def filter_input_ids(self, input_ids: ShortTensor, sentinel_ids: ByteTensor) -> ShortTensor:
         """
         Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
-        This will reduce the sequence length from `expanded_inputs_length` to `input_length`.
+        This will reduce the sequence length.
         """
         input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids.bool(), input_ids)
         longest_after_masking: int = (input_ids_full > self.pad_token_id).sum(-1).max().item()
@@ -158,20 +118,3 @@ class BooruDataCollatorForT5MLM:
             out_row[retained.size(-1)] = self.eos_token_id
 
         return retaineds
-
-    def filter_input_ids(self, input_ids: NDArray, sentinel_ids: NDArray) -> NDArray:
-        """
-        Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
-        This will reduce the sequence length from `expanded_inputs_length` to `input_length`.
-        """
-        batch_size = input_ids.shape[0]
-
-        input_ids_full = np.where(sentinel_ids != 0, sentinel_ids, input_ids)
-        # input_ids tokens and sentinel tokens are >= 0, tokens < 0 are
-        # masked tokens coming after sentinel tokens and should be removed
-        input_ids = input_ids_full[input_ids_full >= 0].reshape((batch_size, -1))
-        # this usually inserts EOS in the wrong place (i.e. post-padding)
-        input_ids = np.concatenate(
-            [input_ids, np.full((batch_size, 1), self.eos_token_id, dtype=np.int32)], axis=-1
-        )
-        return input_ids

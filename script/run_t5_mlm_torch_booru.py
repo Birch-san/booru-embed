@@ -373,6 +373,9 @@ def main():
     else:
         logger.info("Training new model from scratch")
         model: T5BooruForMaskedLM = T5BooruForMaskedLM(config)
+    
+    # for debug
+    model.vocab = vocab
 
     # We resize the embeddings only when necessary to avoid index errors. If you are creating a model from scratch
     # on a small vocab and want a smaller embedding size, remove this test.
@@ -384,12 +387,6 @@ def main():
     model_max_ctx_len = 255
 
     max_seq_length: int = min(data_args.max_seq_length or model_max_ctx_len, model_max_ctx_len)
-
-    expanded_inputs_length, targets_length = compute_input_and_target_lengths(
-        inputs_length=max_seq_length,
-        noise_density=data_args.mlm_probability,
-        mean_noise_span_length=data_args.mean_noise_span_length,
-    )
 
     if data_args.max_seq_length is None:
         max_seq_length = model_max_ctx_len
@@ -528,8 +525,6 @@ def main():
         eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
         pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
         sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
-        input_length=max_seq_length,
-        target_length=targets_length,
         decoder_start_token_id=model.config.decoder_start_token_id,
         # vocab is optional, to aid in debugging (enables decoding of a sample)
         vocab=vocab,

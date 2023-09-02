@@ -48,6 +48,8 @@ from transformers.utils import (
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from transformers.models.t5.configuration_t5 import T5Config
 
+from ..vocab import Vocab
+
 
 logger = logging.get_logger(__name__)
 
@@ -848,7 +850,7 @@ class T5PreTrainedModel(PreTrainedModel):
         if isinstance(module, (T5Attention, T5Stack)):
             module.gradient_checkpointing = value
 
-    def _shift_right(self, input_ids):
+    def _shift_right(self, input_ids: LongTensor) -> LongTensor:
         decoder_start_token_id = self.config.decoder_start_token_id
         pad_token_id = self.config.pad_token_id
 
@@ -859,12 +861,12 @@ class T5PreTrainedModel(PreTrainedModel):
             )
 
         # shift inputs to the right
-        # TODO: why doesn't this use roll()?
         if is_torch_fx_proxy(input_ids):
             # Item assignment is not supported natively for proxies.
             shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), decoder_start_token_id)
             shifted_input_ids = torch.cat([shifted_input_ids, input_ids[..., :-1]], dim=-1)
         else:
+            # TODO: should this just be detach().roll(input_ids, 1)?
             shifted_input_ids = input_ids.new_zeros(input_ids.shape)
             shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
             shifted_input_ids[..., 0] = decoder_start_token_id
@@ -949,7 +951,7 @@ class T5Stack(T5PreTrainedModel):
 
     def forward(
         self,
-        input_ids=None,
+        input_ids: Optional[torch.IntTensor]=None,
         attention_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
@@ -981,6 +983,8 @@ class T5Stack(T5PreTrainedModel):
         elif input_ids is not None:
             input_shape = input_ids.size()
             input_ids = input_ids.view(-1, input_shape[-1])
+            # can't embed shorts
+            input_ids = input_ids.int()
         elif inputs_embeds is not None:
             input_shape = inputs_embeds.size()[:-1]
         else:
@@ -1533,6 +1537,8 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
 
     loss_fn: LogSoftmax
+    # for debug (enables decoding of captions)
+    vocab: Optional[Vocab] = None
 
     def __init__(self, config: T5Config):
         super().__init__(config)
@@ -1680,6 +1686,8 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
 
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
+
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
@@ -1704,10 +1712,10 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
-        # TODO: consider whether to shift-right here, or to do it in the collator, like run_t5_mlm_flax.py does.
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
-            decoder_input_ids = self._shift_right(labels)
+            # TODO: do we need to shift a mask too?
+            decoder_input_ids: LongTensor = self._shift_right(labels)
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1756,11 +1764,12 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
             # move labels to correct device to enable PP
             labels: LongTensor = labels.to(lm_logits.device)
             # labels needs to be one-hot, broadcastable to `[..., num_classes]`
-            labels_oh: LongTensor = one_hot(labels, lm_logits.size(-1))
+            # one_hot only supports "index tensors" (which apparently means it doesn't accept int or short)
+            labels_oh: LongTensor = one_hot(labels.long(), lm_logits.size(-1))
 
             # TODO: compare with t5x
             # https://github.com/google-research/t5x/blob/77d2624e65799e3bea15586eb1d3fe7c63477a92/t5x/models.py#L738
-            # https://github.com/google-research/t5x/blob/main/t5x/losses.py#L50
+            # https://github.com/google-research/t5x/blob/0728d8429041d6c6e75077334e76eb2370c6057b/t5x/losses.py#L50
 
             # https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
             # z_loss encourages the logits:
@@ -1768,7 +1777,7 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
             # - to be normalized log-probabilities
             if z_loss is not None and z_loss > 0.:
                 log_z: FloatTensor = lm_logits.logsumexp(dim=-1)
-                log_softmax: FloatTensor = lm_logits - log_z
+                log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
             else:
                 log_softmax: FloatTensor = self.loss_fn(lm_logits)
             loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg().mean()
