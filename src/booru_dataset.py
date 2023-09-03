@@ -32,7 +32,6 @@ class BooruDataset(Dataset[BooruDatum]):
     start, end = self.bucket_content.indices[index:index+2]
     datum: NDArray = self.bucket_content.values[start:end]
     # [self.vocab.tokens[token_ix] for token_ix in datum]
-    # TODO: random_spans_noise_mask is catastrophically non-random for short sequences (e.g. length 30)
     mask_indices: NDArray = self.random_spans_noise_mask(length=end-start)
     return BooruDatum(
       datum=datum,
