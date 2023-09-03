@@ -1,0 +1,7 @@
+evaluate
+accelerate>=0.20.1
+transformers
+torch
+numpy
+# MAX_JOBS=4 pip install flash-attn --no-build-isolation
+flash-attn

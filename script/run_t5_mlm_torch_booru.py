@@ -60,7 +60,6 @@ from transformers.utils.versions import require_version
 
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
-from src.compute_input_and_target_lengths import compute_input_and_target_lengths
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
