@@ -22,7 +22,7 @@ import warnings
 from typing import Optional, Tuple, Union
 
 import torch
-from torch import nn, FloatTensor, LongTensor
+from torch import nn, FloatTensor, LongTensor, BoolTensor
 from torch.nn import LogSoftmax
 from torch.nn.functional import one_hot
 from torch.utils.checkpoint import checkpoint
@@ -866,9 +866,7 @@ class T5PreTrainedModel(PreTrainedModel):
             shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), decoder_start_token_id)
             shifted_input_ids = torch.cat([shifted_input_ids, input_ids[..., :-1]], dim=-1)
         else:
-            # TODO: should this just be detach().roll(input_ids, 1)?
-            shifted_input_ids = input_ids.new_zeros(input_ids.shape)
-            shifted_input_ids[..., 1:] = input_ids[..., :-1].clone()
+            shifted_input_ids = input_ids.detach().roll(1)
             shifted_input_ids[..., 0] = decoder_start_token_id
 
         if pad_token_id is None:
@@ -1714,8 +1712,11 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
 
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
-            # TODO: do we need to shift a mask too?
-            decoder_input_ids: LongTensor = self._shift_right(labels)
+            decoder_input_ids: LongTensor = self._shift_right(labels.int())
+
+        shifted_decoder_attention_mask: Optional[BoolTensor] = None
+        if decoder_attention_mask is not None:
+            shifted_decoder_attention_mask = self._shift_right(decoder_attention_mask)
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1725,13 +1726,13 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
                 decoder_input_ids = decoder_input_ids.to(self.decoder.first_device)
             if attention_mask is not None:
                 attention_mask = attention_mask.to(self.decoder.first_device)
-            if decoder_attention_mask is not None:
-                decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
+            if shifted_decoder_attention_mask is not None:
+                shifted_decoder_attention_mask = shifted_decoder_attention_mask.to(self.decoder.first_device)
 
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
-            attention_mask=decoder_attention_mask,
+            attention_mask=shifted_decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
             past_key_values=past_key_values,
             encoder_hidden_states=hidden_states,
@@ -1780,9 +1781,10 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
                 log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
             else:
                 log_softmax: FloatTensor = self.loss_fn(lm_logits)
-            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg().mean()
+            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg()#.mean()
             if z_loss is not None and z_loss > 0.:
                 loss += z_loss * log_z ** 2
+            loss = loss.mean()
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs

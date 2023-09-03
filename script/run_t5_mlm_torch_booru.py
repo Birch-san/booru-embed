@@ -175,14 +175,6 @@ class DataTrainingArguments:
     dataset_config_name: Optional[str] = field(
         default=None, metadata={"help": "The configuration name of the dataset to use (via the datasets library)."}
     )
-    train_file: Optional[str] = field(default=None, metadata={"help": "The input training data file (a text file)."})
-    validation_file: Optional[str] = field(
-        default=None,
-        metadata={"help": "An optional input evaluation data file to evaluate the perplexity on (a text file)."},
-    )
-    overwrite_cache: bool = field(
-        default=False, metadata={"help": "Overwrite the cached training and evaluation sets"}
-    )
     validation_split_percentage: Optional[int] = field(
         default=5,
         metadata={
@@ -240,23 +232,6 @@ class DataTrainingArguments:
             )
         },
     )
-    streaming: bool = field(default=False, metadata={"help": "Enable streaming mode"})
-
-    def __post_init__(self):
-        if self.streaming:
-            require_version("datasets>=2.0.0", "The streaming feature requires `datasets>=2.0.0`")
-
-        if self.dataset_name is None and self.train_file is None and self.validation_file is None:
-            raise ValueError("Need either a dataset name or a training/validation file.")
-        else:
-            if self.train_file is not None:
-                extension = self.train_file.split(".")[-1]
-                if extension not in ["csv", "json", "txt"]:
-                    raise ValueError("`train_file` should be a csv, a json or a txt file.")
-            if self.validation_file is not None:
-                extension = self.validation_file.split(".")[-1]
-                if extension not in ["csv", "json", "txt"]:
-                    raise ValueError("`validation_file` should be a csv, a json or a txt file.")
 
 
 def main():
@@ -425,19 +400,21 @@ def main():
     bucket_samples_test: Dict[int, BucketContent] = {}
 
     def get_indices(lengths: NDArray) -> NDArray:
-        indices: LongTensor = torch.from_numpy(lengths).to(device=device)
+        indices: LongTensor = torch.from_numpy(lengths).to(device=device, dtype=torch.long)
         indices.cumsum_(0)
         indices.resize_(indices.shape[0]+1)
         indices = indices.roll(1)
         return indices.cpu().numpy()
 
-    train_test_split = 0.1
+    train_test_split = data_args.validation_split_percentage/100
     # for testing
-    sample_limit_per_bucket = 100
+    sample_limit_per_bucket: Optional[int] = None if data_args.max_train_samples is None else (
+        int(data_args.max_train_samples/(1-train_test_split))
+    )
     for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
         values: NDArray = np.load(join(bucket_dir, 'values.npy'))
         lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
-        samples_to_take = min(values.shape[0], sample_limit_per_bucket)
+        samples_to_take = lengths.shape[0] if sample_limit_per_bucket is None else min(lengths.shape[0], sample_limit_per_bucket)
 
         lengths = lengths[:samples_to_take]
         train_start_ix = int(samples_to_take * train_test_split)

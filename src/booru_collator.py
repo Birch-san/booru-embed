@@ -13,6 +13,7 @@ class BooruBatchData(TypedDict):
     input_ids: ShortTensor
     attention_mask: BoolTensor
     labels: ShortTensor
+    decoder_attention_mask: BoolTensor
 
 @dataclass
 class BooruDataCollatorForT5MLM:
@@ -72,11 +73,13 @@ class BooruDataCollatorForT5MLM:
         # TODO: should we introduce conv tokens inside the model itself? (encoder could do it)
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
+        decoder_attention_mask: BoolTensor = batch_labels != self.pad_token_id
 
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
             labels=batch_labels.detach().cpu(),
+            decoder_attention_mask=decoder_attention_mask.detach().cpu(),
         )
         batch_encoding = BatchEncoding(
             data=data,
