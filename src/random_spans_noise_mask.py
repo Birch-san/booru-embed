@@ -24,7 +24,8 @@ def random_spans_noise_mask(
   mean_noise_span_length: float,
   length: int,
 ) -> NDArray:
-  """This function is copy of `random_spans_helper <https://github.com/google-research/text-to-text-transfer-transformer/blob/84f8bcc14b5f2c03de51bd3587609ba8f6bbd1cd/t5/data/preprocessors.py#L2682>`__ .
+  """This function is copy of HF's `random_spans_noise_mask`: https://github.com/huggingface/transformers/blob/0afa5071bd84e44301750fdc594e33db102cf374/examples/flax/language-modeling/run_t5_mlm_flax.py#L405
+  which is itself a port of Google's `random_spans_helper`: https://github.com/google-research/text-to-text-transfer-transformer/blob/84f8bcc14b5f2c03de51bd3587609ba8f6bbd1cd/t5/data/preprocessors.py#L2682
 
   Noise mask consisting of random spans of noise tokens.
   The number of noise tokens and the number of noise spans and non-noise spans
