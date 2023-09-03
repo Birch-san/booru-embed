@@ -11,6 +11,7 @@ __pycache__/
 /out-t5-mlm-flax/
 /out-t5-mlm-torch/
 /out-t5-mlm-torch-2/
+/out-t5-mlm-torch-booru/
 /out-mlm-torch/
 /out_tokenizer/
 runs/
