@@ -559,7 +559,7 @@ class T5Attention(nn.Module):
             query_states,
             key_states,
             value_states,
-            attn_mask=position_bias_masked,
+            attn_mask=position_bias_masked.to(query_states.dtype),
             dropout_p=self.dropout if self.training else 0.,
         ) # [batch, heads, q_len, v_out_dim]
 
