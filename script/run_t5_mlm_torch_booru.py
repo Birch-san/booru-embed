@@ -57,6 +57,7 @@ from transformers import (
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
+from transformers.utils.import_utils import _is_package_available
 
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
@@ -71,6 +72,9 @@ from src.random_spans_noise_mask import random_spans_noise_mask
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
 logger = logging.getLogger(__name__)
+
+_xformers_available: bool = _is_package_available('xformers')
+
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
@@ -142,6 +146,15 @@ class ModelArguments:
                 "Whether or not to allow for custom models defined on the Hub in their own modeling files. This option"
                 "should only be set to `True` for repositories you trust and in which you have read the code, as it will"
                 "execute code present on the Hub on your local machine."
+            )
+        },
+    )
+    xformers: bool = field(
+        default=False,
+        metadata={
+            "help": (
+                'Whether to use xformers memory_efficient_attention instead of the default torch sdp attention.'
+                'xformers has accelerated kernels for attention bias, whereas torch sdp does not appear to currently.'
             )
         },
     )
@@ -348,6 +361,14 @@ def main():
         logger.info("Training new model from scratch")
         model: T5BooruForMaskedLM = T5BooruForMaskedLM(config)
     
+    if model_args.xformers:
+        assert _xformers_available, 'You requested xformers, but the xformers package does not appear to be installed.'
+        assert torch.cuda.is_available(), "You requested xformers, but CUDA is not available (you would not be able to use xformers' accelerated CUDA kernels)."
+        model.enable_xformers_memory_efficient_attention()
+    else:
+        if _xformers_available and torch.cuda.is_available():
+            logger.warning('xformers is available, but you are not using it.')
+    
     # for debug
     model.vocab = vocab
 
@@ -504,6 +525,8 @@ def main():
         decoder_start_token_id=model.config.decoder_start_token_id,
         # vocab is optional, to aid in debugging (enables decoding of a sample)
         vocab=vocab,
+        # xformers kernels only support attention bias for sequence lengths multiple of 8
+        pad_to_multiple=8 if model_args.xformers else None,
     )
 
     # Initialize our Trainer
