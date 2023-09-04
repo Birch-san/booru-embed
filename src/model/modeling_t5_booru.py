@@ -24,7 +24,7 @@ from typing import Optional, Tuple, Union
 import torch
 from torch import nn, FloatTensor, LongTensor, BoolTensor
 from torch.nn import LogSoftmax
-from torch.nn.functional import one_hot
+from torch.nn.functional import one_hot, scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -356,6 +356,7 @@ class T5Attention(nn.Module):
         self.relative_attention_max_distance = config.relative_attention_max_distance
         self.d_model = config.d_model
         self.key_value_proj_dim = config.d_kv
+        self.scale = config.d_kv**-.5
         self.n_heads = config.num_heads
         self.dropout = config.dropout_rate
         self.inner_dim = self.n_heads * self.key_value_proj_dim
@@ -529,20 +530,15 @@ class T5Attention(nn.Module):
             hidden_states, self.v, key_value_states, past_key_value[1] if past_key_value is not None else None
         )
 
-        # compute scores
-        scores = torch.matmul(
-            query_states, key_states.transpose(3, 2)
-        )  # equivalent of torch.einsum("bnqd,bnkd->bnqk", query_states, key_states), compatible with onnx op>9
-
         if position_bias is None:
             if not self.has_relative_attention_bias:
                 position_bias = torch.zeros(
-                    (1, self.n_heads, real_seq_length, key_length), device=scores.device, dtype=scores.dtype
+                    (1, self.n_heads, real_seq_length, key_length), device=query_states.device, dtype=query_states.dtype
                 )
                 if self.gradient_checkpointing and self.training:
                     position_bias.requires_grad = True
             else:
-                position_bias = self.compute_bias(real_seq_length, key_length, device=scores.device)
+                position_bias = self.compute_bias(real_seq_length, key_length, device=query_states.device)
 
             # if key and values are already calculated
             # we want only the last query position bias
@@ -559,31 +555,22 @@ class T5Attention(nn.Module):
         else:
             position_bias_masked = position_bias
 
-        scores += position_bias_masked
-        attn_weights = nn.functional.softmax(scores.float(), dim=-1).type_as(
-            scores
-        )  # (batch_size, n_heads, seq_length, key_length)
-        attn_weights = nn.functional.dropout(
-            attn_weights, p=self.dropout, training=self.training
-        )  # (batch_size, n_heads, seq_length, key_length)
+        attn_weights: FloatTensor = scaled_dot_product_attention(
+            query_states,
+            key_states,
+            value_states,
+            attn_mask=position_bias_masked,
+            dropout_p=self.dropout if self.training else 0.,
+        ) # [batch, heads, q_len, v_out_dim]
 
-        # Mask heads if we want to
         if layer_head_mask is not None:
+            # in original implementation, layer_head_mask was compatible with:
+            #   [batch, heads, q_len, k_len]
+            # due to torch sdp, we are multiplying later, so can only support layer_head_mask broadcastable to:
+            #   [batch, heads, q_len, 1]
             attn_weights = attn_weights * layer_head_mask
-        
-        # layer_head_mask needs to be broadcastable to
-        #   [batch, heads, q_len, k_len]
-        # if we use torch sdp, then we'll have
-        #   [batch, heads, q_len, v_out_dim]
-        # so long as layer_head_mask can broadcast to:
-        #   [batch, heads, q_len, 1]
-        # then we can make this work with torch sdp
-        # wr = torch.randn_like(attn_weights)
-        # mr = torch.randn(*attn_weights.shape[:-1], 1, dtype=attn_weights.dtype, device=attn_weights.device)
-        # vr = torch.randn_like(value_states)
-        # ((wr * mr) @ vr).allclose((wr @ vr) * mr, atol=2e-5)
 
-        attn_output = unshape(torch.matmul(attn_weights, value_states))  # (batch_size, seq_length, dim)
+        attn_output = unshape(attn_weights)  # (batch_size, seq_length, dim)
         attn_output = self.o(attn_output)
 
         present_key_value_state = (key_states, value_states) if (self.is_decoder and use_cache) else None
@@ -851,7 +838,7 @@ class T5PreTrainedModel(PreTrainedModel):
             d_model = self.config.d_model
             key_value_proj_dim = self.config.d_kv
             n_heads = self.config.num_heads
-            module.q.weight.data.normal_(mean=0.0, std=factor * ((d_model * key_value_proj_dim) ** -0.5))
+            module.q.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
             module.k.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
             module.v.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
             module.o.weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
@@ -1793,7 +1780,7 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
                 log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
             else:
                 log_softmax: FloatTensor = self.loss_fn(lm_logits)
-            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg()#.mean()
+            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg()
             if z_loss is not None and z_loss > 0.:
                 loss += z_loss * log_z ** 2
             loss = loss.mean()
