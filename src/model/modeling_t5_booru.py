@@ -570,6 +570,18 @@ class T5Attention(nn.Module):
         # Mask heads if we want to
         if layer_head_mask is not None:
             attn_weights = attn_weights * layer_head_mask
+        
+        # layer_head_mask needs to be broadcastable to
+        #   [batch, heads, q_len, k_len]
+        # if we use torch sdp, then we'll have
+        #   [batch, heads, q_len, v_out_dim]
+        # so long as layer_head_mask can broadcast to:
+        #   [batch, heads, q_len, 1]
+        # then we can make this work with torch sdp
+        # wr = torch.randn_like(attn_weights)
+        # mr = torch.randn(*attn_weights.shape[:-1], 1, dtype=attn_weights.dtype, device=attn_weights.device)
+        # vr = torch.randn_like(value_states)
+        # ((wr * mr) @ vr).allclose((wr @ vr) * mr, atol=2e-5)
 
         attn_output = unshape(torch.matmul(attn_weights, value_states))  # (batch_size, seq_length, dim)
         attn_output = self.o(attn_output)
