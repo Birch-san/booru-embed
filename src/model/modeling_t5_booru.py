@@ -19,12 +19,12 @@ import copy
 import math
 import os
 import warnings
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Callable
 
 import torch
 from torch import nn, FloatTensor, LongTensor, BoolTensor
 from torch.nn import LogSoftmax
-from torch.nn.functional import one_hot, scaled_dot_product_attention
+from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -45,6 +45,7 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
+from transformers.utils.import_utils import _is_package_available
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 from transformers.models.t5.configuration_t5 import T5Config
 
@@ -52,6 +53,14 @@ from ..vocab import Vocab
 
 
 logger = logging.get_logger(__name__)
+
+_xformers_available: bool = _is_package_available('xformers')
+
+if _xformers_available:
+    import xformers
+    import xformers.ops
+else:
+    xformers = None
 
 _CONFIG_FOR_DOC = "T5Config"
 _CHECKPOINT_FOR_DOC = "t5-small"
@@ -348,6 +357,9 @@ class T5LayerFF(nn.Module):
 
 
 class T5Attention(nn.Module):
+    use_xformers_attn: bool
+    xformers_attention_op: Optional[Callable]
+
     def __init__(self, config: T5Config, has_relative_attention_bias=False):
         super().__init__()
         self.is_decoder = config.is_decoder
@@ -371,6 +383,9 @@ class T5Attention(nn.Module):
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
         self.pruned_heads = set()
         self.gradient_checkpointing = False
+
+        self.use_xformers_attn = False
+        self.xformers_attention_op = None
 
     def prune_heads(self, heads):
         if len(heads) == 0:
@@ -453,6 +468,33 @@ class T5Attention(nn.Module):
         values = values.permute([2, 0, 1]).unsqueeze(0)  # shape (1, num_heads, query_length, key_length)
         return values
 
+    def set_use_memory_efficient_attention_xformers(
+        self, use_memory_efficient_attention_xformers: bool, attention_op: Optional[Callable] = None
+    ) -> None:
+        if use_memory_efficient_attention_xformers:
+            if not _xformers_available:
+                raise ModuleNotFoundError(
+                    (
+                        "Refer to https://github.com/facebookresearch/xformers for more information on how to install"
+                        " xformers"
+                    ),
+                    name="xformers",
+                )
+            elif not torch.cuda.is_available():
+                raise ValueError(
+                    "torch.cuda.is_available() should be True but is False. xformers' memory efficient attention is"
+                    " only available for GPU "
+                )
+            else:
+                # Make sure we can run the memory efficient attention
+                xformers.ops.memory_efficient_attention(
+                    torch.randn((1, 2, 40), device='cuda'),
+                    torch.randn((1, 2, 40), device='cuda'),
+                    torch.randn((1, 2, 40), device='cuda'),
+                )
+                self.use_xformers_attn = True
+                self.xformers_attention_op = attention_op
+
     def forward(
         self,
         hidden_states,
@@ -484,12 +526,16 @@ class T5Attention(nn.Module):
 
         key_length = real_seq_length if key_value_states is None else key_value_states.shape[1]
 
-        def shape(states):
+        def shape(states: FloatTensor) -> FloatTensor:
             """projection"""
-            return states.view(batch_size, -1, self.n_heads, self.key_value_proj_dim).transpose(1, 2)
+            view: FloatTensor = states.view(batch_size, -1, self.n_heads, self.key_value_proj_dim)
+            if not self.use_xformers_attn:
+                view = view.transpose(1, 2)
+            return view
 
-        def unshape(states):
+        def unshape(states: FloatTensor) -> FloatTensor:
             """reshape"""
+            # TODO: may need to skip this transpose if it's xformers
             return states.transpose(1, 2).contiguous().view(batch_size, -1, self.inner_dim)
 
         def project(hidden_states, proj_layer, key_value_states, past_key_value):
@@ -519,6 +565,7 @@ class T5Attention(nn.Module):
                     hidden_states = past_key_value
             return hidden_states
 
+        # TODO: can we fuse the qkv projection?
         # get query states
         query_states = shape(self.q(hidden_states))  # (batch_size, n_heads, seq_length, dim_per_head)
 
@@ -555,13 +602,25 @@ class T5Attention(nn.Module):
         else:
             position_bias_masked = position_bias
 
-        attn_weights: FloatTensor = scaled_dot_product_attention(
-            query_states,
-            key_states,
-            value_states,
-            attn_mask=position_bias_masked.to(query_states.dtype),
-            dropout_p=self.dropout if self.training else 0.,
-        ) # [batch, heads, q_len, v_out_dim]
+        if self.use_xformers_attn:
+            attn_weights: FloatTensor = xformers.ops.memory_efficient_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=position_bias_masked.to(query_states.dtype),
+                dropout_p=self.dropout if self.training else 0.,
+                op=self.xformers_attention_op,
+            ) # [?]
+        else:
+            attn_weights: FloatTensor = scaled_dot_product_attention(
+                query_states,
+                key_states,
+                value_states,
+                attn_mask=position_bias_masked.to(query_states.dtype),
+                dropout_p=self.dropout if self.training else 0.,
+            ) # [batch, heads, q_len, v_out_dim]
+
+        # pad(hidden_states, mode='constant', pad=(0, 0, 0, 4))
 
         if layer_head_mask is not None:
             # in original implementation, layer_head_mask was compatible with:
@@ -1539,6 +1598,10 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
 
     def __init__(self, config: T5Config):
         super().__init__(config)
+
+        if not _xformers_available:
+            logger.warn(f"xformers not found. T5Booru will fall back to torch sdp attention, which will likely fallback to the (non-accelerated) 'math' mode (due to lack of support for attention bias in its accelerated kernels).")
+
         self.model_dim = config.d_model
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -1565,6 +1628,51 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         # Model parallel
         self.model_parallel = False
         self.device_map = None
+
+    def set_use_memory_efficient_attention_xformers(
+        self, valid: bool, attention_op: Optional[Callable] = None
+    ) -> None:
+        # Recursively walk through all the children.
+        # Any children which exposes the set_use_memory_efficient_attention_xformers method
+        # gets the message
+        def fn_recursive_set_mem_eff(module: torch.nn.Module):
+            if hasattr(module, "set_use_memory_efficient_attention_xformers"):
+                module.set_use_memory_efficient_attention_xformers(valid, attention_op)
+
+            for child in module.children():
+                fn_recursive_set_mem_eff(child)
+
+        for module in self.children():
+            if isinstance(module, torch.nn.Module):
+                fn_recursive_set_mem_eff(module)
+
+    def enable_xformers_memory_efficient_attention(self, attention_op: Optional[Callable] = None):
+        r"""
+        Enable memory efficient attention from [xFormers](https://facebookresearch.github.io/xformers/).
+
+        When this option is enabled, you should observe lower GPU memory usage and a potential speed up during
+        inference. Speed up during training is not guaranteed.
+
+        Parameters:
+            attention_op (`Callable`, *optional*):
+                Override the default `None` operator for use as `op` argument to the
+                [`memory_efficient_attention()`](https://facebookresearch.github.io/xformers/components/ops.html#xformers.ops.memory_efficient_attention)
+                function of xFormers.
+
+        Example:
+
+        ```py
+        >>> from xformers.ops import MemoryEfficientAttentionFlashAttentionOp
+        >>> model.enable_xformers_memory_efficient_attention(attention_op=MemoryEfficientAttentionFlashAttentionOp)
+        ```
+        """
+        self.set_use_memory_efficient_attention_xformers(True, attention_op)
+
+    def disable_xformers_memory_efficient_attention(self):
+        r"""
+        Disable memory efficient attention from [xFormers](https://facebookresearch.github.io/xformers/).
+        """
+        self.set_use_memory_efficient_attention_xformers(False)
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):

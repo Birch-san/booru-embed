@@ -5,6 +5,8 @@ import numpy as np
 from numpy.typing import NDArray
 import torch
 from torch import ByteTensor, BoolTensor, ShortTensor, full
+from torch.nn.functional import pad
+from transformers.utils.import_utils import _is_package_available
 
 from .booru_dataset import BooruDatum
 from .vocab import Vocab
@@ -40,6 +42,8 @@ class BooruDataCollatorForT5MLM:
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
     device: torch.device = field(init=False)
+    # xformers kernels only support attention bias for sequence lengths multiple of 8
+    pad_to_multiple: Optional[int] = None
 
     def __post_init__(self):
         self.device = torch.device('cuda')
@@ -74,6 +78,8 @@ class BooruDataCollatorForT5MLM:
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
         decoder_attention_mask: BoolTensor = batch_labels != self.pad_token_id
+
+        # TODO: pad_to_multiple
 
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
