@@ -607,10 +607,10 @@ class T5Attention(nn.Module):
                 query_states,
                 key_states,
                 value_states,
-                attn_mask=position_bias_masked.to(query_states.dtype),
-                dropout_p=self.dropout if self.training else 0.,
+                attn_bias=position_bias_masked.to(query_states.dtype).contiguous(),
+                p=self.dropout if self.training else 0.,
                 op=self.xformers_attention_op,
-            ) # [?]
+            ) # [batch, q_len, heads, v_out_dim]
         else:
             attn_weights: FloatTensor = scaled_dot_product_attention(
                 query_states,
@@ -629,6 +629,7 @@ class T5Attention(nn.Module):
             #   [batch, heads, q_len, 1]
             attn_weights = attn_weights * layer_head_mask
 
+        # TODO: check whether transpose in here is needed (does xformer output same shape as torch sdp?)
         attn_output = unshape(attn_weights)  # (batch_size, seq_length, dim)
         attn_output = self.o(attn_output)
 
