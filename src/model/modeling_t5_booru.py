@@ -22,7 +22,7 @@ import warnings
 from typing import Optional, Tuple, Union, Callable
 
 import torch
-from torch import nn, FloatTensor, LongTensor, BoolTensor
+from torch import nn, FloatTensor, LongTensor, BoolTensor, Tensor
 from torch.nn import LogSoftmax
 from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
@@ -497,10 +497,10 @@ class T5Attention(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        mask=None,
-        key_value_states=None,
-        position_bias=None,
+        hidden_states: FloatTensor,
+        mask: Optional[Tensor] = None,
+        key_value_states: Optional[Tensor] = None,
+        position_bias: Optional[FloatTensor] = None,
         past_key_value=None,
         layer_head_mask=None,
         query_length=None,
@@ -535,8 +535,9 @@ class T5Attention(nn.Module):
 
         def unshape(states: FloatTensor) -> FloatTensor:
             """reshape"""
-            # TODO: may need to skip this transpose if it's xformers
-            return states.transpose(1, 2).contiguous().view(batch_size, -1, self.inner_dim)
+            if not self.use_xformers_attn:
+                states = states.transpose(1, 2).contiguous()
+            return states.view(batch_size, -1, self.inner_dim)
 
         def project(hidden_states, proj_layer, key_value_states, past_key_value):
             """projects hidden states correctly to key/query states"""
@@ -620,16 +621,20 @@ class T5Attention(nn.Module):
                 dropout_p=self.dropout if self.training else 0.,
             ) # [batch, heads, q_len, v_out_dim]
 
-        # pad(hidden_states, mode='constant', pad=(0, 0, 0, 4))
-
         if layer_head_mask is not None:
             # in original implementation, layer_head_mask was compatible with:
             #   [batch, heads, q_len, k_len]
             # due to torch sdp, we are multiplying later, so can only support layer_head_mask broadcastable to:
             #   [batch, heads, q_len, 1]
+            if self.use_xformers_attn:
+                # in xformers, attn_weights is
+                #   [batch, q_len, heads, v_out_dim]
+                # so we need to adapt mask from:
+                #   [batch, heads, q_len, 1] ->
+                #   [batch, q_len, heads, 1]
+                layer_head_mask = layer_head_mask.transpose(1, 2)
             attn_weights = attn_weights * layer_head_mask
 
-        # TODO: check whether transpose in here is needed (does xformer output same shape as torch sdp?)
         attn_output = unshape(attn_weights)  # (batch_size, seq_length, dim)
         attn_output = self.o(attn_output)
 
