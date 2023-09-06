@@ -19,12 +19,12 @@ import copy
 import math
 import os
 import warnings
-from typing import Optional, Tuple, Union, Callable
+from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
 from torch import nn, FloatTensor, LongTensor, BoolTensor, Tensor
 from torch.nn import LogSoftmax
-from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
+from torch.nn.functional import one_hot, scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -286,6 +286,20 @@ except Exception:
 
 ALL_LAYERNORM_LAYERS.append(T5LayerNorm)
 
+class KeyValue(NamedTuple):
+    key: FloatTensor
+    value: FloatTensor
+
+class AttnOutputs(NamedTuple):
+    attn_output: FloatTensor
+    kv: Optional[KeyValue]
+    position_bias: Optional[FloatTensor]
+
+class AttnOutputsWithWeights(NamedTuple):
+    attn_output: FloatTensor
+    kv: Optional[KeyValue]
+    position_bias: Optional[FloatTensor]
+    weights: FloatTensor
 
 class T5DenseActDense(nn.Module):
     def __init__(self, config: T5Config):
@@ -501,12 +515,12 @@ class T5Attention(nn.Module):
         mask: Optional[Tensor] = None,
         key_value_states: Optional[Tensor] = None,
         position_bias: Optional[FloatTensor] = None,
-        past_key_value=None,
-        layer_head_mask=None,
-        query_length=None,
+        past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
+        layer_head_mask: Optional[FloatTensor] = None,
+        query_length: Optional[int] = None,
         use_cache=False,
         output_attentions=False,
-    ):
+    ) -> AttnOutputs | AttnOutputsWithWeights:
         """
         Self-attention (if key_value_states is None) or attention over source sentence (provided by key_value_states).
         """
@@ -539,7 +553,12 @@ class T5Attention(nn.Module):
                 states = states.transpose(1, 2).contiguous()
             return states.view(batch_size, -1, self.inner_dim)
 
-        def project(hidden_states, proj_layer, key_value_states, past_key_value):
+        def project(
+            hidden_states: FloatTensor,
+            proj_layer: nn.Linear,
+            key_value_states: Optional[FloatTensor],
+            past_key_value: Optional[FloatTensor],
+        ) -> FloatTensor:
             """projects hidden states correctly to key/query states"""
             if key_value_states is None:
                 # self-attn
@@ -620,6 +639,8 @@ class T5Attention(nn.Module):
                 attn_mask=position_bias_masked.to(query_states.dtype),
                 dropout_p=self.dropout if self.training else 0.,
             ) # [batch, heads, q_len, v_out_dim]
+        
+        # assert not attn_weights.isnan().any().item()
 
         if layer_head_mask is not None:
             # in original implementation, layer_head_mask was compatible with:
@@ -636,13 +657,13 @@ class T5Attention(nn.Module):
             attn_weights = attn_weights * layer_head_mask
 
         attn_output = unshape(attn_weights)  # (batch_size, seq_length, dim)
-        attn_output = self.o(attn_output)
+        attn_output: FloatTensor = self.o(attn_output)
 
-        present_key_value_state = (key_states, value_states) if (self.is_decoder and use_cache) else None
-        outputs = (attn_output,) + (present_key_value_state,) + (position_bias,)
+        present_key_value_state: Optional[KeyValue] = KeyValue(key_states, value_states) if self.is_decoder and use_cache else None
+        outputs = AttnOutputs(attn_output, present_key_value_state, position_bias)
 
         if output_attentions:
-            outputs = outputs + (attn_weights,)
+            outputs = AttnOutputsWithWeights(*outputs, attn_weights)
         return outputs
 
 
@@ -942,6 +963,8 @@ class T5PreTrainedModel(PreTrainedModel):
 
 
 class T5Stack(T5PreTrainedModel):
+    use_xformers_attn: bool
+
     def __init__(self, config, embed_tokens=None):
         super().__init__(config)
 
@@ -960,6 +983,8 @@ class T5Stack(T5PreTrainedModel):
         self.model_parallel = False
         self.device_map = None
         self.gradient_checkpointing = False
+
+        self.use_xformers_attn = False
 
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
@@ -1010,6 +1035,12 @@ class T5Stack(T5PreTrainedModel):
 
     def set_input_embeddings(self, new_embeddings):
         self.embed_tokens = new_embeddings
+
+    def set_use_memory_efficient_attention_xformers(
+        self, use_memory_efficient_attention_xformers: bool, attention_op: Optional[Callable] = None
+    ) -> None:
+        if use_memory_efficient_attention_xformers and _xformers_available:
+            self.use_xformers_attn = True
 
     def forward(
         self,
@@ -1079,9 +1110,14 @@ class T5Stack(T5PreTrainedModel):
         if past_key_values is None:
             past_key_values = [None] * len(self.block)
 
+        # torch sdp returns NaN if we supply a torch.finfo(torch.float32).min mask cast to bfloat16. but seems fine if it begins in bfloat16.
+        mask_dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else None
         # We can provide a self-attention mask of dimensions [batch_size, from_seq_length, to_seq_length]
         # ourselves in which case we just need to make it broadcastable to all heads.
-        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape)
+        extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=mask_dtype)
+        if self.use_xformers_attn:
+            # xformers returns NaN for maximally-negative biases.
+            extended_attention_mask.clamp_min_(-10000)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -1156,6 +1192,7 @@ class T5Stack(T5PreTrainedModel):
                     layer_head_mask,
                     cross_attn_layer_head_mask,
                     None,  # past_key_value is always None with gradient checkpointing
+                    use_reentrant=False,
                 )
             else:
                 layer_outputs = layer_module(
