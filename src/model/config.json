@@ -2,6 +2,7 @@
   "architectures": [
     "T5BooruForMaskedLM"
   ],
+  "cpad_token_id": 3,
   "d_ff": 1024,
   "d_kv": 64,
   "d_model": 512,
@@ -20,5 +21,6 @@
   "pad_token_id": 0,
   "relative_attention_num_buckets": 32,
   "tie_word_embeddings": false,
+  "use_conv_in": true,
   "vocab_size": 32169
 }
