@@ -161,6 +161,7 @@
         "--output_dir", "./out-t5-mlm-torch-booru",
         "--overwrite_output_dir",
         "--xformers",
+        "--gradient_checkpointing",
         // "--dataloader_num_workers"
       ],
       "env": {

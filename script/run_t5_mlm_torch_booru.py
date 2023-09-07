@@ -345,6 +345,7 @@ def main():
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
     assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
+    assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will all the tokenizer's tokens represented in the Embedding."
 
     if model_args.model_name_or_path:
         model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
@@ -368,6 +369,9 @@ def main():
     else:
         if _xformers_available and torch.cuda.is_available():
             logger.warning('xformers is available, but you are not using it.')
+    
+    if training_args.gradient_checkpointing:
+        model.gradient_checkpointing_enable()
     
     # for debug
     model.vocab = vocab

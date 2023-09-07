@@ -1,3 +1,4 @@
+from typing import Optional
 from transformers.configuration_utils import PretrainedConfig
 
 class T5BooruConfig(PretrainedConfig):
@@ -63,6 +64,7 @@ class T5BooruConfig(PretrainedConfig):
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
         feed_forward_proj="relu",
+        encoder_conv_dim: Optional[int] = 512,
         is_encoder_decoder=True,
         use_cache=True,
         pad_token_id=0,
@@ -84,6 +86,7 @@ class T5BooruConfig(PretrainedConfig):
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
+        self.encoder_conv_dim = encoder_conv_dim
         self.use_cache = use_cache
 
         act_info = self.feed_forward_proj.split("-")
