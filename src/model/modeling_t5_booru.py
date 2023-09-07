@@ -700,7 +700,7 @@ class T5BooruLayerSelfAttention(nn.Module):
         return outputs
 
 
-class T5LayerCrossAttention(nn.Module):
+class T5BooruLayerCrossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.EncDecAttention = T5BooruAttention(config, has_relative_attention_bias=False)
@@ -743,7 +743,7 @@ class T5BooruBlock(nn.Module):
         self.layer = nn.ModuleList()
         self.layer.append(T5BooruLayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias))
         if self.is_decoder:
-            self.layer.append(T5LayerCrossAttention(config))
+            self.layer.append(T5BooruLayerCrossAttention(config))
 
         self.layer.append(T5BooruLayerFF(config))
 
