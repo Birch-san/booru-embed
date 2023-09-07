@@ -47,7 +47,6 @@ import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
-    T5Config,
     HfArgumentParser,
     Trainer,
     TrainingArguments,
@@ -61,6 +60,7 @@ from transformers.utils.import_utils import _is_package_available
 
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
+from src.model.configuration_t5_booru import T5BooruConfig
 from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
@@ -328,9 +328,9 @@ def main():
         "trust_remote_code": model_args.trust_remote_code,
     }
     if model_args.config_name:
-        config: T5Config = T5Config.from_pretrained(model_args.config_name, **config_kwargs)
+        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.config_name, **config_kwargs)
     elif model_args.model_name_or_path:
-        config: T5Config = T5Config.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")

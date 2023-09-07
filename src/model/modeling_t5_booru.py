@@ -47,7 +47,8 @@ from transformers.utils import (
 )
 from transformers.utils.import_utils import _is_package_available
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
-from transformers.models.t5.configuration_t5 import T5Config
+# from transformers.models.t5.configuration_t5 import T5Config
+from .configuration_t5_booru import T5BooruConfig
 
 from ..vocab import Vocab
 
@@ -62,7 +63,7 @@ if _xformers_available:
 else:
     xformers = None
 
-_CONFIG_FOR_DOC = "T5Config"
+_CONFIG_FOR_DOC = "T5BooruConfig"
 _CHECKPOINT_FOR_DOC = "t5-small"
 
 ####################################################
@@ -246,7 +247,7 @@ DEPARALLELIZE_DOCSTRING = r"""
 """
 
 
-class T5LayerNorm(nn.Module):
+class T5BooruLayerNorm(nn.Module):
     def __init__(self, hidden_size, eps=1e-6):
         """
         Construct a layernorm module in the T5 style. No bias and no subtraction of mean.
@@ -274,17 +275,17 @@ class T5LayerNorm(nn.Module):
 try:
     from apex.normalization import FusedRMSNorm
 
-    T5LayerNorm = FusedRMSNorm  # noqa
+    T5BooruLayerNorm = FusedRMSNorm  # noqa
 
-    logger.info("Discovered apex.normalization.FusedRMSNorm - will use it instead of T5LayerNorm")
+    logger.info("Discovered apex.normalization.FusedRMSNorm - will use it instead of T5BooruLayerNorm")
 except ImportError:
-    # using the normal T5LayerNorm
+    # using the normal T5BooruLayerNorm
     pass
 except Exception:
-    logger.warning("discovered apex but it failed to load, falling back to T5LayerNorm")
+    logger.warning("discovered apex but it failed to load, falling back to T5BooruLayerNorm")
     pass
 
-ALL_LAYERNORM_LAYERS.append(T5LayerNorm)
+ALL_LAYERNORM_LAYERS.append(T5BooruLayerNorm)
 
 class KeyValue(NamedTuple):
     key: FloatTensor
@@ -301,8 +302,8 @@ class AttnOutputsWithWeights(NamedTuple):
     position_bias: Optional[FloatTensor]
     weights: FloatTensor
 
-class T5DenseActDense(nn.Module):
-    def __init__(self, config: T5Config):
+class T5BooruDenseActDense(nn.Module):
+    def __init__(self, config: T5BooruConfig):
         super().__init__()
         self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
@@ -323,8 +324,8 @@ class T5DenseActDense(nn.Module):
         return hidden_states
 
 
-class T5DenseGatedActDense(nn.Module):
-    def __init__(self, config: T5Config):
+class T5BooruDenseGatedActDense(nn.Module):
+    def __init__(self, config: T5BooruConfig):
         super().__init__()
         self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
@@ -353,14 +354,14 @@ class T5DenseGatedActDense(nn.Module):
 
 
 class T5LayerFF(nn.Module):
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5BooruConfig):
         super().__init__()
         if config.is_gated_act:
-            self.DenseReluDense = T5DenseGatedActDense(config)
+            self.DenseReluDense = T5BooruDenseGatedActDense(config)
         else:
-            self.DenseReluDense = T5DenseActDense(config)
+            self.DenseReluDense = T5BooruDenseActDense(config)
 
-        self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(self, hidden_states):
@@ -370,11 +371,11 @@ class T5LayerFF(nn.Module):
         return hidden_states
 
 
-class T5Attention(nn.Module):
+class T5BooruAttention(nn.Module):
     use_xformers_attn: bool
     xformers_attention_op: Optional[Callable]
 
-    def __init__(self, config: T5Config, has_relative_attention_bias=False):
+    def __init__(self, config: T5BooruConfig, has_relative_attention_bias=False):
         super().__init__()
         self.is_decoder = config.is_decoder
         self.has_relative_attention_bias = has_relative_attention_bias
@@ -670,8 +671,8 @@ class T5Attention(nn.Module):
 class T5LayerSelfAttention(nn.Module):
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
-        self.SelfAttention = T5Attention(config, has_relative_attention_bias=has_relative_attention_bias)
-        self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.SelfAttention = T5BooruAttention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -702,8 +703,8 @@ class T5LayerSelfAttention(nn.Module):
 class T5LayerCrossAttention(nn.Module):
     def __init__(self, config):
         super().__init__()
-        self.EncDecAttention = T5Attention(config, has_relative_attention_bias=False)
-        self.layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.EncDecAttention = T5BooruAttention(config, has_relative_attention_bias=False)
+        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -735,7 +736,7 @@ class T5LayerCrossAttention(nn.Module):
         return outputs
 
 
-class T5Block(nn.Module):
+class T5BooruBlock(nn.Module):
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
         self.is_decoder = config.is_decoder
@@ -859,18 +860,18 @@ class T5Block(nn.Module):
         return outputs  # hidden-states, present_key_value_states, (self-attention position bias), (self-attention weights), (cross-attention position bias), (cross-attention weights)
 
 
-class T5PreTrainedModel(PreTrainedModel):
+class T5BooruPreTrainedModel(PreTrainedModel):
     """
     An abstract class to handle weights initialization and a simple interface for downloading and loading pretrained
     models.
     """
 
-    config_class = T5Config
+    config_class = T5BooruConfig
     load_tf_weights = load_tf_weights_in_t5
     base_model_prefix = "transformer"
     is_parallelizable = True
     supports_gradient_checkpointing = True
-    _no_split_modules = ["T5Block"]
+    _no_split_modules = ["T5BooruBlock"]
     _keep_in_fp32_modules = ["wo"]
 
     @property
@@ -887,9 +888,9 @@ class T5PreTrainedModel(PreTrainedModel):
     def _init_weights(self, module):
         """Initialize the weights"""
         factor = self.config.initializer_factor  # Used for testing weights initialization
-        if isinstance(module, T5LayerNorm):
+        if isinstance(module, T5BooruLayerNorm):
             module.weight.data.fill_(factor * 1.0)
-        elif isinstance(module, (T5Model, T5BooruForMaskedLM, T5EncoderModel)):
+        elif isinstance(module, (T5BooruModel, T5BooruForMaskedLM, T5BooruEncoderModel)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
@@ -898,7 +899,7 @@ class T5PreTrainedModel(PreTrainedModel):
             if hasattr(module, "qa_outputs"):
                 module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
                 module.qa_outputs.bias.data.zero_()
-        elif isinstance(module, T5DenseActDense):
+        elif isinstance(module, T5BooruDenseActDense):
             # Mesh TensorFlow FF initialization
             # See https://github.com/tensorflow/mesh/blob/master/mesh_tensorflow/transformer/transformer_layers.py#L56
             # and https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L89
@@ -908,7 +909,7 @@ class T5PreTrainedModel(PreTrainedModel):
             module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
                 module.wo.bias.data.zero_()
-        elif isinstance(module, T5DenseGatedActDense):
+        elif isinstance(module, T5BooruDenseGatedActDense):
             module.wi_0.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
             if hasattr(module.wi_0, "bias") and module.wi_0.bias is not None:
                 module.wi_0.bias.data.zero_()
@@ -918,7 +919,7 @@ class T5PreTrainedModel(PreTrainedModel):
             module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
                 module.wo.bias.data.zero_()
-        elif isinstance(module, T5Attention):
+        elif isinstance(module, T5BooruAttention):
             # Mesh TensorFlow attention initialization to avoid scaling before softmax
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/attention.py#L136
             d_model = self.config.d_model
@@ -932,7 +933,7 @@ class T5PreTrainedModel(PreTrainedModel):
                 module.relative_attention_bias.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
 
     def _set_gradient_checkpointing(self, module, value=False):
-        if isinstance(module, (T5Attention, T5Stack)):
+        if isinstance(module, (T5BooruAttention, T5BooruStack)):
             module.gradient_checkpointing = value
 
     def _shift_right(self, input_ids: LongTensor) -> LongTensor:
@@ -962,7 +963,7 @@ class T5PreTrainedModel(PreTrainedModel):
         return shifted_input_ids
 
 
-class T5Stack(T5PreTrainedModel):
+class T5BooruStack(T5BooruPreTrainedModel):
     use_xformers_attn: bool
 
     def __init__(self, config, embed_tokens=None):
@@ -972,9 +973,9 @@ class T5Stack(T5PreTrainedModel):
         self.is_decoder = config.is_decoder
 
         self.block = nn.ModuleList(
-            [T5Block(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
+            [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
         )
-        self.final_layer_norm = T5LayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.final_layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
         # Initialize weights and apply final processing
@@ -989,7 +990,7 @@ class T5Stack(T5PreTrainedModel):
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
-            "`T5Stack.parallelize` is deprecated and will be removed in v5 of Transformers, you should load your model"
+            "`T5BooruStack.parallelize` is deprecated and will be removed in v5 of Transformers, you should load your model"
             " with `device_map='balanced'` in the call to `from_pretrained`. You can also provide your own"
             " `device_map` but it needs to be a dictionary module_name to device, so for instance {'block.0': 0,"
             " 'block.1': 1, ...}",
@@ -1281,7 +1282,7 @@ T5_START_DOCSTRING = r"""
     and behavior.
 
     Parameters:
-        config ([`T5Config`]): Model configuration class with all the parameters of the model.
+        config ([`T5BooruConfig`]): Model configuration class with all the parameters of the model.
             Initializing with a config file does not load the weights associated with the model, only the
             configuration. Check out the [`~PreTrainedModel.from_pretrained`] method to load the model weights.
 """
@@ -1429,13 +1430,13 @@ num_heads)`.
     "The bare T5 Model transformer outputting raw hidden-states without any specific head on top.",
     T5_START_DOCSTRING,
 )
-class T5Model(T5PreTrainedModel):
+class T5BooruModel(T5BooruPreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [
         "decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
     ]
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
 
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
@@ -1443,13 +1444,13 @@ class T5Model(T5PreTrainedModel):
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5BooruStack(encoder_config, self.shared)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.shared)
+        self.decoder = T5BooruStack(decoder_config, self.shared)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1461,7 +1462,7 @@ class T5Model(T5PreTrainedModel):
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
-            "`T5Model.parallelize` is deprecated and will be removed in v5 of Transformers, you should load your model"
+            "`T5BooruModel.parallelize` is deprecated and will be removed in v5 of Transformers, you should load your model"
             " with `device_map='balanced'` in the call to `from_pretrained`. You can also provide your own"
             " `device_map` but it needs to be a dictionary module_name to device, so for instance {'encoder.block.0':"
             " 0, 'encoder.block.1': 1, ...}",
@@ -1539,17 +1540,17 @@ class T5Model(T5PreTrainedModel):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, T5Model
+        >>> from transformers import AutoTokenizer, T5BooruModel
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-small")
-        >>> model = T5Model.from_pretrained("t5-small")
+        >>> model = T5BooruModel.from_pretrained("t5-small")
 
         >>> input_ids = tokenizer(
         ...     "Studies have been shown that owning a dog is good for you", return_tensors="pt"
         ... ).input_ids  # Batch size 1
         >>> decoder_input_ids = tokenizer("Studies show that", return_tensors="pt").input_ids  # Batch size 1
 
-        >>> # preprocess: Prepend decoder_input_ids with start token which is pad token for T5Model.
+        >>> # preprocess: Prepend decoder_input_ids with start token which is pad token for T5BooruModel.
         >>> # This is not needed for torch's T5BooruForMaskedLM as it does this internally using labels arg.
         >>> decoder_input_ids = model._shift_right(decoder_input_ids)
 
@@ -1629,7 +1630,7 @@ class T5Model(T5PreTrainedModel):
 
 
 @add_start_docstrings("""T5 Model with a `language modeling` head on top.""", T5_START_DOCSTRING)
-class T5BooruForMaskedLM(T5PreTrainedModel):
+class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [
         "decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
     ]
@@ -1639,7 +1640,7 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5BooruConfig):
         super().__init__(config)
 
         if not _xformers_available:
@@ -1653,13 +1654,13 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5BooruStack(encoder_config, self.shared)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5Stack(decoder_config, self.shared)
+        self.decoder = T5BooruStack(decoder_config, self.shared)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
@@ -2019,17 +2020,17 @@ class T5BooruForMaskedLM(T5PreTrainedModel):
     "The bare T5 Model transformer outputting encoder's raw hidden-states without any specific head on top.",
     T5_START_DOCSTRING,
 )
-class T5EncoderModel(T5PreTrainedModel):
+class T5BooruEncoderModel(T5BooruPreTrainedModel):
     _tied_weights_keys = ["encoder.embed_tokens.weight"]
 
-    def __init__(self, config: T5Config):
+    def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5Stack(encoder_config, self.shared)
+        self.encoder = T5BooruStack(encoder_config, self.shared)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -2041,7 +2042,7 @@ class T5EncoderModel(T5PreTrainedModel):
     @add_start_docstrings(PARALLELIZE_DOCSTRING)
     def parallelize(self, device_map=None):
         warnings.warn(
-            "`T5EncoderModel.parallelize` is deprecated and will be removed in v5 of Transformers, you should load"
+            "`T5BooruEncoderModel.parallelize` is deprecated and will be removed in v5 of Transformers, you should load"
             " your model with `device_map='balanced'` in the call to `from_pretrained`. You can also provide your own"
             " `device_map` but it needs to be a dictionary module_name to device, so for instance {'block.0': 0,"
             " 'block.1': 1, ...}",
@@ -2104,10 +2105,10 @@ class T5EncoderModel(T5PreTrainedModel):
         Example:
 
         ```python
-        >>> from transformers import AutoTokenizer, T5EncoderModel
+        >>> from transformers import AutoTokenizer, T5BooruEncoderModel
 
         >>> tokenizer = AutoTokenizer.from_pretrained("t5-small")
-        >>> model = T5EncoderModel.from_pretrained("t5-small")
+        >>> model = T5BooruEncoderModel.from_pretrained("t5-small")
         >>> input_ids = tokenizer(
         ...     "Studies have been shown that owning a dog is good for you", return_tensors="pt"
         ... ).input_ids  # Batch size 1
