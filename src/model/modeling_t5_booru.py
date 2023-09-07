@@ -353,7 +353,7 @@ class T5BooruDenseGatedActDense(nn.Module):
         return hidden_states
 
 
-class T5LayerFF(nn.Module):
+class T5BooruLayerFF(nn.Module):
     def __init__(self, config: T5BooruConfig):
         super().__init__()
         if config.is_gated_act:
@@ -745,7 +745,7 @@ class T5BooruBlock(nn.Module):
         if self.is_decoder:
             self.layer.append(T5LayerCrossAttention(config))
 
-        self.layer.append(T5LayerFF(config))
+        self.layer.append(T5BooruLayerFF(config))
 
     def forward(
         self,
