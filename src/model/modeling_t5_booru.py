@@ -513,8 +513,8 @@ class T5BooruAttention(nn.Module):
     def forward(
         self,
         hidden_states: FloatTensor,
-        mask: Optional[Tensor] = None,
-        key_value_states: Optional[Tensor] = None,
+        mask: Optional[FloatTensor] = None,
+        key_value_states: Optional[FloatTensor] = None,
         position_bias: Optional[FloatTensor] = None,
         past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
         layer_head_mask: Optional[FloatTensor] = None,
@@ -677,16 +677,16 @@ class T5BooruLayerSelfAttention(nn.Module):
 
     def forward(
         self,
-        hidden_states,
-        attention_mask=None,
-        position_bias=None,
-        layer_head_mask=None,
-        past_key_value=None,
+        hidden_states: FloatTensor,
+        attention_mask: Optional[FloatTensor] = None,
+        position_bias: Optional[FloatTensor] = None,
+        layer_head_mask: Optional[FloatTensor] = None,
+        past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
         use_cache=False,
         output_attentions=False,
-    ):
+    ) -> AttnOutputs | AttnOutputsWithWeights:
         normed_hidden_states = self.layer_norm(hidden_states)
-        attention_output = self.SelfAttention(
+        attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.SelfAttention(
             normed_hidden_states,
             mask=attention_mask,
             position_bias=position_bias,
@@ -695,9 +695,15 @@ class T5BooruLayerSelfAttention(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions,
         )
-        hidden_states = hidden_states + self.dropout(attention_output[0])
-        outputs = (hidden_states,) + attention_output[1:]  # add attentions if we output them
-        return outputs
+        attn_output, *_ = attention_outputs
+        layer_output = hidden_states + self.dropout(attn_output)
+        match attention_outputs:
+            case AttnOutputs(_, kv, position_bias):
+                return AttnOutputs(layer_output, kv, position_bias)
+            case AttnOutputsWithWeights(_, kv, position_bias, weights):
+                return AttnOutputsWithWeights(layer_output, kv, position_bias, weights)
+            case _:
+                raise ValueError(f"Never heard of attention_outputs type '{type(attention_outputs)}'")
 
 
 class T5BooruLayerCrossAttention(nn.Module):
@@ -709,18 +715,18 @@ class T5BooruLayerCrossAttention(nn.Module):
 
     def forward(
         self,
-        hidden_states,
+        hidden_states: FloatTensor,
         key_value_states,
-        attention_mask=None,
-        position_bias=None,
-        layer_head_mask=None,
-        past_key_value=None,
+        attention_mask: Optional[FloatTensor] = None,
+        position_bias: Optional[FloatTensor] = None,
+        layer_head_mask: Optional[FloatTensor] = None,
+        past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
         use_cache=False,
         query_length=None,
         output_attentions=False,
-    ):
+    ) -> AttnOutputs | AttnOutputsWithWeights:
         normed_hidden_states = self.layer_norm(hidden_states)
-        attention_output = self.EncDecAttention(
+        attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.EncDecAttention(
             normed_hidden_states,
             mask=attention_mask,
             key_value_states=key_value_states,
@@ -731,33 +737,41 @@ class T5BooruLayerCrossAttention(nn.Module):
             query_length=query_length,
             output_attentions=output_attentions,
         )
-        layer_output = hidden_states + self.dropout(attention_output[0])
-        outputs = (layer_output,) + attention_output[1:]  # add attentions if we output them
-        return outputs
+        attn_output, *_ = attention_outputs
+        layer_output = hidden_states + self.dropout(attn_output)
+        match attention_outputs:
+            case AttnOutputs(_, kv, position_bias):
+                return AttnOutputs(layer_output, kv, position_bias)
+            case AttnOutputsWithWeights(_, kv, position_bias, weights):
+                return AttnOutputsWithWeights(layer_output, kv, position_bias, weights)
+            case _:
+                raise ValueError(f"Never heard of attention_outputs type '{type(attention_outputs)}'")
 
 
 class T5BooruBlock(nn.Module):
+    self_attn: T5BooruLayerSelfAttention
+    cross_attn: Optional[T5BooruLayerCrossAttention]
+    ffn: Optional[T5BooruLayerFF]
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
         self.is_decoder = config.is_decoder
-        self.layer = nn.ModuleList()
-        self.layer.append(T5BooruLayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias))
+        self.self_attn = T5BooruLayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias)
         if self.is_decoder:
-            self.layer.append(T5BooruLayerCrossAttention(config))
+            self.cross_attn = T5BooruLayerCrossAttention(config)
 
-        self.layer.append(T5BooruLayerFF(config))
+        self.ffn = T5BooruLayerFF(config) if config.decoder_mlp or not self.is_decoder else None
 
     def forward(
         self,
-        hidden_states,
-        attention_mask=None,
+        hidden_states: FloatTensor,
+        attention_mask: Optional[FloatTensor] = None,
         position_bias=None,
-        encoder_hidden_states=None,
-        encoder_attention_mask=None,
-        encoder_decoder_position_bias=None,
-        layer_head_mask=None,
-        cross_attn_layer_head_mask=None,
-        past_key_value=None,
+        encoder_hidden_states: Optional[FloatTensor] = None,
+        encoder_attention_mask: Optional[FloatTensor] = None,
+        encoder_decoder_position_bias: Optional[FloatTensor] = None,
+        layer_head_mask: Optional[FloatTensor] = None,
+        cross_attn_layer_head_mask: Optional[FloatTensor] = None,
+        past_key_value: None | Tuple[FloatTensor, FloatTensor] | Tuple[FloatTensor, FloatTensor, FloatTensor, FloatTensor] = None,
         use_cache=False,
         output_attentions=False,
         return_dict=True,
@@ -774,12 +788,12 @@ class T5BooruBlock(nn.Module):
                     f"Got {len(past_key_value)} past key / value states"
                 )
 
-            self_attn_past_key_value = past_key_value[:2]
-            cross_attn_past_key_value = past_key_value[2:]
+            self_attn_past_key_value: Tuple[FloatTensor, FloatTensor] = past_key_value[:2]
+            cross_attn_past_key_value: Tuple[FloatTensor, FloatTensor] = past_key_value[2:]
         else:
             self_attn_past_key_value, cross_attn_past_key_value = None, None
 
-        self_attention_outputs = self.layer[0](
+        self_attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.self_attn(
             hidden_states,
             attention_mask=attention_mask,
             position_bias=position_bias,
@@ -802,6 +816,7 @@ class T5BooruBlock(nn.Module):
 
         do_cross_attention = self.is_decoder and encoder_hidden_states is not None
         if do_cross_attention:
+            assert self.cross_attn is not None
             # the actual query length is unknown for cross attention
             # if using past key value states. Need to inject it here
             if present_key_value_state is not None:
@@ -809,7 +824,7 @@ class T5BooruBlock(nn.Module):
             else:
                 query_length = None
 
-            cross_attention_outputs = self.layer[1](
+            cross_attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.cross_attn(
                 hidden_states,
                 key_value_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
@@ -820,7 +835,7 @@ class T5BooruBlock(nn.Module):
                 use_cache=use_cache,
                 output_attentions=output_attentions,
             )
-            hidden_states = cross_attention_outputs[0]
+            hidden_states, *_ = cross_attention_outputs
 
             # clamp inf values to enable fp16 training
             if hidden_states.dtype == torch.float16:
@@ -839,7 +854,8 @@ class T5BooruBlock(nn.Module):
             attention_outputs = attention_outputs + cross_attention_outputs[2:]
 
         # Apply Feed Forward layer
-        hidden_states = self.layer[-1](hidden_states)
+        if self.ffn is not None:
+            hidden_states = self.ffn(hidden_states)
 
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == torch.float16:

@@ -55,6 +55,7 @@ class T5BooruConfig(PretrainedConfig):
         d_model=512,
         d_kv=64,
         d_ff=2048,
+        decoder_mlp=False,
         decoder_start_token_id=0,
         num_layers=6,
         num_decoder_layers=None,
@@ -76,6 +77,7 @@ class T5BooruConfig(PretrainedConfig):
         self.d_model = d_model
         self.d_kv = d_kv
         self.d_ff = d_ff
+        self.decoder_mlp = decoder_mlp
         self.num_layers = num_layers
         self.num_decoder_layers = (
             num_decoder_layers if num_decoder_layers is not None else self.num_layers
