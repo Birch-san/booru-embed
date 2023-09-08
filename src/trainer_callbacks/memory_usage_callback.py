@@ -53,8 +53,8 @@ class MemoryUsageCallback(TrainerCallback):
       self.log_update[f'sys/torch_mem_used_plus_reserved_{did}'] = used_plus_reserved_bytes
     if self.nvml_service.device_count > 1:
       logger.info(f'  Overall: Used {to_MiB(overall_torch_used_plus_reserved_bytes)}MiB (Allocated: {to_MiB(overall_torch_used)}MiB, Reserved {to_MiB(overall_torch_used_plus_reserved_bytes-overall_torch_used)}MiB)')
-    self.log_update['sys/torch_mem_used_total'] = overall_torch_used
-    self.log_update['sys/torch_mem_used_plus_reserved_total'] = overall_torch_used_plus_reserved_bytes
+    self.log_update['sys/torch_mem_used_overall'] = overall_torch_used
+    self.log_update['sys/torch_mem_used_plus_reserved_overall'] = overall_torch_used_plus_reserved_bytes
     
   def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     if args.report_to and 'wandb' in args.report_to:
