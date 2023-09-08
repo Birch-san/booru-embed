@@ -297,11 +297,11 @@ def main():
             used_bytes, total_bytes = nvml_service.memory_usage(did)
             overall_nvml_used += used_bytes
             overall_nvml_total += total_bytes
-            nvml_metrics[f'sys/nvml_mem_used_{did}'] = used_bytes
-            nvml_metrics[f'sys/nvml_mem_total_{did}'] = total_bytes
+            nvml_metrics[f'sys/nvml_mem_initial_used_{did}'] = used_bytes
+            nvml_metrics[f'sys/nvml_mem_initial_total_{did}'] = total_bytes
         if nvml_service.device_count > 1:
-            nvml_metrics['sys/nvml_mem_used_overall'] = used_bytes
-            nvml_metrics['sys/nvml_mem_total'] = total_bytes
+            nvml_metrics['sys/nvml_mem_initial_used_overall'] = used_bytes
+            nvml_metrics['sys/nvml_mem_initial_total'] = total_bytes
 
         import wandb
         wandb.init(
