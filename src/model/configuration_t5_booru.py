@@ -65,7 +65,6 @@ class T5BooruConfig(PretrainedConfig):
         initializer_factor=1.0,
         feed_forward_proj="relu",
         use_conv_in=True,
-        cpad_token_id=3,
         is_encoder_decoder=True,
         use_cache=True,
         pad_token_id=0,
@@ -88,7 +87,6 @@ class T5BooruConfig(PretrainedConfig):
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
         self.use_conv_in = use_conv_in
-        self.cpad_token_id = cpad_token_id
         self.use_cache = use_cache
 
         act_info = self.feed_forward_proj.split("-")

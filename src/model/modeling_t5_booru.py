@@ -967,7 +967,6 @@ class T5BooruStack(T5BooruPreTrainedModel):
     use_xformers_attn: bool
     embed_tokens: Optional[Embedding]
     conv_in: Optional[Conv1d]
-    cpad_token_id: Optional[int]
 
     def __init__(
         self,
@@ -980,9 +979,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self.is_decoder = config.is_decoder
 
         if config.use_conv_in:
-            assert config.cpad_token_id is not None
-            self.cpad_token_id = config.cpad_token_id
-            self.conv_in = Conv1d(in_channels=config.d_model, out_channels=config.d_model, kernel_size=3)
+            self.conv_in = Conv1d(in_channels=config.d_model, out_channels=config.d_model, kernel_size=3, padding=1)
 
         self.block = nn.ModuleList(
             [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
@@ -1100,8 +1097,6 @@ class T5BooruStack(T5BooruPreTrainedModel):
         if inputs_embeds is None:
             if self.embed_tokens is None:
                 raise ValueError("You have to initialize the model with valid token embeddings")
-            if self.conv_in is not None:
-                input_ids = pad(input_ids, (1, 1), value=self.cpad_token_id)
             inputs_embeds: FloatTensor = self.embed_tokens(input_ids)
             if self.conv_in is not None:
                 inputs_embeds = self.conv_in(inputs_embeds.transpose(-2, -1)).transpose(-2, -1)

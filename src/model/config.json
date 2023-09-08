@@ -2,7 +2,6 @@
   "architectures": [
     "T5BooruForMaskedLM"
   ],
-  "cpad_token_id": 3,
   "d_ff": 1024,
   "d_kv": 64,
   "d_model": 512,
