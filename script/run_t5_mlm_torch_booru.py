@@ -49,6 +49,7 @@ from transformers import (
     MODEL_FOR_MASKED_LM_MAPPING,
     HfArgumentParser,
     Trainer,
+    TrainerCallback,
     TrainingArguments,
     is_torch_tpu_available,
     set_seed,
@@ -65,6 +66,8 @@ from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
+from src.trainer_callbacks.flops_callback import FlopsCallback
+from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -246,18 +249,23 @@ class DataTrainingArguments:
     )
 
 
+@dataclass
+class MyTrainingArguments:
+    measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
+    measure_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
+
 def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments, MyTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args, my_training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args, my_training_args = parser.parse_args_into_dataclasses()
 
     if model_args.use_auth_token is not None:
         warnings.warn("The `use_auth_token` argument is deprecated and will be removed in v4.34.", FutureWarning)
@@ -533,11 +541,20 @@ def main():
         pad_to_multiple=8 if model_args.xformers else None,
     )
 
+    callbacks: List[TrainerCallback] = []
+    if my_training_args.measure_flops:
+        flops_callback = FlopsCallback()
+        callbacks.append(flops_callback)
+    if my_training_args.measure_memory:
+        memory_usage_callback = MemoryUsageCallback()
+        callbacks.append(memory_usage_callback)
+
     # Initialize our Trainer
     # trainer = BooruTrainer(
     trainer = Trainer(
         model=model,
         args=training_args,
+        callbacks=callbacks,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
         # tokenizer=tokenizer,
