@@ -4,3 +4,4 @@ transformers
 torch
 numpy
 xformers
+bitsandbytes>=0.41.1

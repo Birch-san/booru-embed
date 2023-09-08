@@ -162,6 +162,11 @@
         "--overwrite_output_dir",
         "--xformers",
         "--gradient_checkpointing",
+        "--measure_flops",
+        "--measure_memory",
+        "--report_to", "wandb",
+        "--optim", "adamw_8bit",
+        // "--run_name", "whatever",
         // "--dataloader_num_workers"
       ],
       "env": {

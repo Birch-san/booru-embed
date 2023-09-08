@@ -16,3 +16,4 @@ __pycache__/
 /out_tokenizer/
 runs/
 .DS_Store
+/wandb/

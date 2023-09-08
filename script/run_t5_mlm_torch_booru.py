@@ -285,6 +285,34 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
+    if training_args.report_to and 'wandb' in training_args.report_to:
+        import wandb
+        wandb.init(
+            entity='mahouko',
+            project='booru-embed',
+            name=training_args.run_name,
+            config={
+                "learning_rate": training_args.learning_rate,
+                "per_device_train_batch_size": training_args.per_device_train_batch_size,
+                "per_device_eval_batch_size": training_args.per_device_eval_batch_size,
+                "gradient_accumulation_steps": training_args.gradient_accumulation_steps,
+                "gradient_checkpointing": training_args.gradient_checkpointing,
+                "optim": training_args.optim,
+                "adam_beta1": training_args.adam_beta1,
+                "adam_beta2": training_args.adam_beta2,
+                "dataloader_num_workers": training_args.dataloader_num_workers,
+                "weight_decay": training_args.weight_decay,
+                "warmup_ratio": training_args.warmup_ratio,
+                "warmup_steps": training_args.warmup_steps,
+                "lr_scheduler_type": training_args.lr_scheduler_type,
+                "warmup_ratio": training_args.warmup_ratio,
+                "data_seed": training_args.data_seed,
+                "torch_compile": training_args.torch_compile,
+                "torch_compile_mode": training_args.torch_compile_mode,
+                "resume_from_checkpoint": training_args.resume_from_checkpoint,
+            }
+        )
+
     if training_args.should_log:
         # The default of training_args.log_level is passive, so we set log level at info here to have that default.
         transformers.utils.logging.set_verbosity_info()
@@ -545,11 +573,11 @@ def main():
     callbacks: List[TrainerCallback] = []
     if my_training_args.measure_flops:
         flops_callback = FlopsCallback()
-        flops_logger.setLevel(INFO)
+        # flops_logger.setLevel(INFO)
         callbacks.append(flops_callback)
     if my_training_args.measure_memory:
         memory_usage_callback = MemoryUsageCallback()
-        memory_usage_logger.setLevel(INFO)
+        # memory_usage_logger.setLevel(INFO)
         callbacks.append(memory_usage_callback)
 
     # Initialize our Trainer
