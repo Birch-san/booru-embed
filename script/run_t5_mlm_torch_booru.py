@@ -38,6 +38,7 @@ from functools import partial
 import torch
 from torch import LongTensor
 from itertools import pairwise
+from logging import INFO
 
 import datasets
 import evaluate
@@ -66,8 +67,8 @@ from src.booru_special_tokens import SpecialToken, make_mask_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
-from src.trainer_callbacks.flops_callback import FlopsCallback
-from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback
+from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
+from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -544,9 +545,11 @@ def main():
     callbacks: List[TrainerCallback] = []
     if my_training_args.measure_flops:
         flops_callback = FlopsCallback()
+        flops_logger.setLevel(INFO)
         callbacks.append(flops_callback)
     if my_training_args.measure_memory:
         memory_usage_callback = MemoryUsageCallback()
+        memory_usage_logger.setLevel(INFO)
         callbacks.append(memory_usage_callback)
 
     # Initialize our Trainer
