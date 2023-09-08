@@ -55,6 +55,7 @@ class T5BooruConfig(PretrainedConfig):
         d_model=512,
         d_kv=64,
         d_ff=2048,
+        decoder_start_token_id=0,
         num_layers=6,
         num_decoder_layers=None,
         num_heads=8,
@@ -106,6 +107,7 @@ class T5BooruConfig(PretrainedConfig):
 
         super().__init__(
             pad_token_id=pad_token_id,
+            decoder_start_token_id=decoder_start_token_id,
             eos_token_id=eos_token_id,
             is_encoder_decoder=is_encoder_decoder,
             **kwargs,
