@@ -69,6 +69,7 @@ from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
 from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
+from src.nvml_service import NvmlService
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -254,6 +255,7 @@ class DataTrainingArguments:
 class MyTrainingArguments:
     measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     measure_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
+    log_every_n_steps: int = field(default=50, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -285,7 +287,22 @@ def main():
         handlers=[logging.StreamHandler(sys.stdout)],
     )
 
+    nvml_service = NvmlService()
+
     if training_args.report_to and 'wandb' in training_args.report_to:
+        nvml_metrics = {}
+        overall_nvml_used = 0
+        overall_nvml_total = 0
+        for did in range(nvml_service.device_count):
+            used_bytes, total_bytes = nvml_service.memory_usage(did)
+            overall_nvml_used += used_bytes
+            overall_nvml_total += total_bytes
+            nvml_metrics[f'sys/nvml_mem_used_{did}'] = used_bytes
+            nvml_metrics[f'sys/nvml_mem_total_{did}'] = total_bytes
+        if nvml_service.device_count > 1:
+            nvml_metrics['sys/nvml_mem_used_overall'] = used_bytes
+            nvml_metrics['sys/nvml_mem_total'] = total_bytes
+
         import wandb
         wandb.init(
             entity='mahouko',
@@ -310,6 +327,8 @@ def main():
                 "torch_compile": training_args.torch_compile,
                 "torch_compile_mode": training_args.torch_compile_mode,
                 "resume_from_checkpoint": training_args.resume_from_checkpoint,
+                "metric_for_bet_model": training_args.metric_for_best_model,
+                **nvml_metrics,
             }
         )
 
@@ -570,13 +589,14 @@ def main():
         pad_to_multiple=8 if model_args.xformers else None,
     )
 
+    log_every_n_steps=my_training_args.log_every_n_steps
     callbacks: List[TrainerCallback] = []
     if my_training_args.measure_flops:
-        flops_callback = FlopsCallback()
+        flops_callback = FlopsCallback(log_every_n_steps=log_every_n_steps)
         # flops_logger.setLevel(INFO)
         callbacks.append(flops_callback)
     if my_training_args.measure_memory:
-        memory_usage_callback = MemoryUsageCallback()
+        memory_usage_callback = MemoryUsageCallback(nvml_service=nvml_service)
         # memory_usage_logger.setLevel(INFO)
         callbacks.append(memory_usage_callback)
 

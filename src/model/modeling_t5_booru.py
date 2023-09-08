@@ -22,7 +22,7 @@ import warnings
 from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
-from torch import nn, FloatTensor, LongTensor, BoolTensor, Tensor
+from torch import nn, FloatTensor, LongTensor, BoolTensor
 from torch.nn import LogSoftmax, Conv1d, Embedding
 from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
