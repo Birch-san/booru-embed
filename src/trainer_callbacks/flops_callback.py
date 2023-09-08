@@ -30,5 +30,5 @@ class FlopsCallback(TrainerCallback):
     step_flops: float = step_flos/self.step_duration
     all_steps_flops: float = state.total_flos/self.all_steps_secs
 
-    logger.info(f'step {state.global_step} TFLOPs: {step_flops/1000**4:.02f} (avg {all_steps_flops/1000**4:.02f})')
+    logger.info(f'step %s TFLOPs: %.02f (avg %.02f)', state.global_step, step_flops/1000**4, all_steps_flops/1000**4)
     self.step_duration = None
