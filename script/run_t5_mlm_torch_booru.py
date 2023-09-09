@@ -69,8 +69,6 @@ from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
 from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
-from src.trainer_callbacks.inter_step_duration_callback import InterStepDurationCallback
-from src.trainer_callbacks.intra_step_duration_callback import IntraStepDurationCallback
 from src.trainer_callbacks.train_duration_callback import TrainDurationCallback
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
@@ -621,8 +619,6 @@ def main():
     callbacks: List[TrainerCallback] = [
         FlopsCallback(log_every_n_steps=log_every_n_steps),
         MemoryUsageCallback(nvml_service=nvml_service),
-        InterStepDurationCallback(),
-        IntraStepDurationCallback(),
         TrainDurationCallback(),
     ]
     if my_training_args.log_flops:
