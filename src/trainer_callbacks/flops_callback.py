@@ -6,7 +6,7 @@ from logging import getLogger
 logger = getLogger(__name__)
 
 FlopMetrics = TypedDict("FlopMetrics", {
-  'perf/current_flos': float,
+  'perf/flos': float,
   'perf/total_flos': float,
   'perf/flops': float,
 })
@@ -17,9 +17,10 @@ class FlopsCallback(TrainerCallback):
   prev_total_flos = 0
   last_log_tic: Optional[float] = 0
   metrics: FlopMetrics = {
-    'perf/current_flos': 0.,
+    'perf/flos': 0.,
+    # RECOMMENDED: ${perf/total_flos} / ${perf/train_duration}
     'perf/total_flos': 0.,
-    'perf/current_flops': 0.,
+    'perf/flops': 0.,
   }
 
   def __init__(self, log_every_n_steps=0) -> None:
@@ -32,17 +33,16 @@ class FlopsCallback(TrainerCallback):
     return control
   
   def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-    assert self.train_begin is not None
     now: float = perf_counter()
     secs_since_last_log: float = now - self.last_log_tic
     flos_since_last_log: float = state.total_flos - self.prev_total_flos
     self.prev_total_flos = state.total_flos
 
-    self.metrics['perf/current_flos'] = flos_since_last_log
+    self.metrics['perf/flos'] = flos_since_last_log
     self.metrics['perf/total_flos'] = state.total_flos
     self.metrics['perf/flops'] = flos_since_last_log / secs_since_last_log
 
-    logger.info(f'step %s TFLOPs: %.02f (avg %.02f)', state.global_step, self.metrics['perf/flops']/1000**4, self.metrics['perf/flops_avg']/1000**4)
+    logger.info(f'step %s TFLOPs: %.02f', state.global_step, self.metrics['perf/flops']/1000**4)
     if args.report_to and 'wandb' in args.report_to:
       import wandb
       wandb.log(self.metrics, step=state.global_step, commit=False)
