@@ -50,7 +50,8 @@ class TrainDurationCallback(TrainerCallback):
       self.metrics['perf/all_interstep_duration'] += self.metrics['perf/interstep_duration']
   
   def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-    self.metrics['perf/intrastep_duration'] = perf_counter() - self.step_begin
+    self.step_end = perf_counter()
+    self.metrics['perf/intrastep_duration'] = self.step_end - self.step_begin
     self.metrics['perf/all_intrastep_duration'] += self.metrics['perf/intrastep_duration']
   
   def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
