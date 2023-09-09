@@ -34,10 +34,10 @@ class MemoryUsageCallback(TrainerCallback):
       # you can compute used+reserved via nvidia-smi yourself:
       # nvidia-smi -i 0 -q -d MEMORY
       logger.info(f'  Device {did}: Used {to_MiB(used_bytes)}MiB / {to_MiB(total_bytes)}MiB')
-      self.log_update[f'sys/nvml_mem_used_{did}'] = used_bytes
+      self.log_update[f'mem/nvml_mem_used_{did}'] = used_bytes
     if self.nvml_service.device_count > 1:
       logger.info(f'  Overall: Used {to_MiB(overall_nvml_used)}MiB / {to_MiB(overall_nvml_total)}MiB')
-    self.log_update['sys/nvml_mem_used_overall'] = used_bytes
+    self.log_update['mem/nvml_mem_used_overall'] = used_bytes
 
     overall_torch_used = 0
     overall_torch_used_plus_reserved_bytes = 0
@@ -49,12 +49,12 @@ class MemoryUsageCallback(TrainerCallback):
       # Allocated/resident includes stuff like optimizer state
       # Reserved includes temporary state like gradients
       logger.info(f'  Device {did}: Used {to_MiB(used_plus_reserved_bytes)}MiB (Allocated: {to_MiB(used_bytes)}MiB, Reserved {to_MiB(used_plus_reserved_bytes-used_bytes)}MiB)')
-      self.log_update[f'sys/torch_mem_used_{did}'] = used_bytes
-      self.log_update[f'sys/torch_mem_used_plus_reserved_{did}'] = used_plus_reserved_bytes
+      self.log_update[f'mem/torch_mem_used_{did}'] = used_bytes
+      self.log_update[f'mem/torch_mem_used_plus_reserved_{did}'] = used_plus_reserved_bytes
     if self.nvml_service.device_count > 1:
       logger.info(f'  Overall: Used {to_MiB(overall_torch_used_plus_reserved_bytes)}MiB (Allocated: {to_MiB(overall_torch_used)}MiB, Reserved {to_MiB(overall_torch_used_plus_reserved_bytes-overall_torch_used)}MiB)')
-    self.log_update['sys/torch_mem_used_overall'] = overall_torch_used
-    self.log_update['sys/torch_mem_used_plus_reserved_overall'] = overall_torch_used_plus_reserved_bytes
+    self.log_update['mem/torch_mem_used_overall'] = overall_torch_used
+    self.log_update['mem/torch_mem_used_plus_reserved_overall'] = overall_torch_used_plus_reserved_bytes
     
   def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     if args.report_to and 'wandb' in args.report_to:
