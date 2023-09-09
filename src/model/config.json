@@ -23,5 +23,6 @@
   "relative_attention_num_buckets": 32,
   "tie_word_embeddings": false,
   "use_conv_in": true,
-  "vocab_size": 32169
+  "vocab_size_nominal": 32169,
+  "pad_vocab_to_multiple": 8
 }

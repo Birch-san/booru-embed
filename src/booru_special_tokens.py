@@ -24,6 +24,13 @@ def make_rating_token(rating: Rating) -> str:
 def make_mask_token(ix: int) -> str:
   return f'<mask_{ix}>'
 
+def make_vocab_pad_token(ix: int) -> str:
+  """
+  For padding the vocab length to a multiple of 8, to optimize for tensor cores
+  https://developer.download.nvidia.com/video/gputechconf/gtc/2019/presentation/s9926-tensor-core-performance-the-ultimate-guide.pdf
+  """
+  return f'<i_love_tensor_cores_{ix}>'
+
 def get_booru_special_tokens(mask_token_count = 100) -> Generator[str, None, None]:
   for special_token in SpecialToken:
     yield special_token.value

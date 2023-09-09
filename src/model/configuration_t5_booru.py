@@ -1,4 +1,5 @@
 from transformers.configuration_utils import PretrainedConfig
+from ..ceil_to_multiple import ceil_to_multiple
 
 class T5BooruConfig(PretrainedConfig):
     r"""
@@ -50,7 +51,7 @@ class T5BooruConfig(PretrainedConfig):
 
     def __init__(
         self,
-        vocab_size=32128,
+        vocab_size_nominal=32169,
         d_model=512,
         d_kv=64,
         d_ff=2048,
@@ -69,11 +70,14 @@ class T5BooruConfig(PretrainedConfig):
         use_conv_in=True,
         is_encoder_decoder=True,
         use_cache=True,
+        pad_vocab_to_multiple=8,
         pad_token_id=0,
         eos_token_id=1,
         **kwargs,
     ):
-        self.vocab_size = vocab_size
+        self.vocab_size_nominal = vocab_size_nominal
+        self.pad_vocab_to_multiple = pad_vocab_to_multiple
+        self.vocab_size = ceil_to_multiple(vocab_size_nominal, pad_vocab_to_multiple)
         self.d_model = d_model
         self.d_kv = d_kv
         self.d_ff = d_ff
