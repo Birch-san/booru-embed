@@ -63,13 +63,15 @@ from transformers.utils.import_utils import _is_package_available
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
-from src.booru_special_tokens import SpecialToken, make_mask_token
+from src.booru_special_tokens import SpecialToken, make_mask_token, make_vocab_pad_token
 from src.booru_collator import BooruDataCollatorForT5MLM
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
 from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
+from src.trainer_callbacks.inter_step_duration_callback import InterStepDurationCallback
 from src.nvml_service import NvmlService
+from src.ceil_to_multiple import remaining_to_multiple
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -262,8 +264,8 @@ class SysArguments:
 
 @dataclass
 class MyTrainingArguments:
-    measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
-    measure_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
+    log_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
+    log_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
     log_every_n_steps: int = field(default=50, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
 
 def main():
@@ -432,8 +434,13 @@ def main():
     # create this file by running scripts/make_tokenizer.py
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
+    assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
+    if config.pad_vocab_to_multiple:
+        for ix in range(remaining_to_multiple(len(vocab.tokens), config.pad_vocab_to_multiple)):
+            vocab.add_token(make_vocab_pad_token(ix))
+    assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
+    assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
     assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
-    assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will all the tokenizer's tokens represented in the Embedding."
 
     if model_args.model_name_or_path:
         model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
@@ -604,19 +611,20 @@ def main():
         # xformers kernels only support attention bias for sequence lengths multiple of 8
         pad_to_multiple=pad_to_multiple,
         pad_to_max=data_args.pad_to_max_length,
+        max_length=max_seq_length,
         device=torch.device(data_args.collator_device),
     )
 
     log_every_n_steps=my_training_args.log_every_n_steps
-    callbacks: List[TrainerCallback] = []
-    if my_training_args.measure_flops:
-        flops_callback = FlopsCallback(log_every_n_steps=log_every_n_steps)
-        # flops_logger.setLevel(INFO)
-        callbacks.append(flops_callback)
-    if my_training_args.measure_memory:
-        memory_usage_callback = MemoryUsageCallback(nvml_service=nvml_service)
-        # memory_usage_logger.setLevel(INFO)
-        callbacks.append(memory_usage_callback)
+    callbacks: List[TrainerCallback] = [
+        FlopsCallback(log_every_n_steps=log_every_n_steps),
+        MemoryUsageCallback(nvml_service=nvml_service),
+        InterStepDurationCallback(nvml_service=nvml_service),
+    ]
+    if my_training_args.log_flops:
+        flops_logger.setLevel(INFO)
+    if my_training_args.log_memory:
+        memory_usage_logger.setLevel(INFO)
 
     # Initialize our Trainer
     # trainer = BooruTrainer(

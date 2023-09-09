@@ -80,8 +80,6 @@ class BooruDataCollatorForT5MLM:
         batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t)
         batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t)
 
-        # TODO: should we introduce conv tokens inside the model itself? (encoder could do it)
-
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
         decoder_attention_mask: BoolTensor = batch_labels != self.pad_token_id
         
