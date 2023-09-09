@@ -71,6 +71,7 @@ from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
 from src.trainer_callbacks.inter_step_duration_callback import InterStepDurationCallback
 from src.trainer_callbacks.intra_step_duration_callback import IntraStepDurationCallback
+from src.trainer_callbacks.train_duration_callback import TrainDurationCallback
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
 
@@ -622,6 +623,7 @@ def main():
         MemoryUsageCallback(nvml_service=nvml_service),
         InterStepDurationCallback(),
         IntraStepDurationCallback(),
+        TrainDurationCallback(),
     ]
     if my_training_args.log_flops:
         flops_logger.setLevel(INFO)

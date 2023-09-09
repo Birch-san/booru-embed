@@ -6,6 +6,8 @@ from logging import getLogger
 logger = getLogger(__name__)
 
 FlopMetrics = TypedDict("FlopMetrics", {
+  'perf/current_flos': float,
+  'perf/total_flos': float,
   'perf/flops': float,
   'perf/flops_avg': float,
 })
@@ -16,6 +18,8 @@ class FlopsCallback(TrainerCallback):
   prev_total_flos = 0
   last_log_tic: Optional[float] = 0
   metrics: FlopMetrics = {
+    'perf/current_flos': 0.,
+    'perf/total_flos': 0.,
     'perf/flops': 0.,
     'perf/flops_avg': 0.,
   }
@@ -40,6 +44,8 @@ class FlopsCallback(TrainerCallback):
     flos_since_last_log: float = state.total_flos - self.prev_total_flos
     self.prev_total_flos = state.total_flos
 
+    self.metrics['perf/current_flos'] = flos_since_last_log
+    self.metrics['perf/total_flos'] = state.total_flos
     self.metrics['perf/flops'] = flos_since_last_log / secs_since_last_log
     self.metrics['perf/flops_avg'] = state.total_flos / secs_since_training_began
 
