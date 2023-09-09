@@ -155,7 +155,7 @@
       "args": [
         "--config_name", "./src/model",
         "--tokenizer_name", "google/t5-v1_1-small",
-        "--per_device_train_batch_size", "4",
+        "--per_device_train_batch_size", "256",
         "--per_device_eval_batch_size", "4",
         "--do_train",
         "--output_dir", "./out-t5-mlm-torch-booru",
@@ -166,12 +166,26 @@
         "--measure_memory",
         "--report_to", "wandb",
         "--optim", "adamw_8bit",
-        // "--run_name", "whatever",
-        // "--dataloader_num_workers"
+        "--log_every_n_steps", "5",
+        "--collator_device", "cpu",
+        "--pad_to_multiple", "8",
+        // "--torch_compile",
+        // "--torch_compile_mode", "reduce-overhead", // https://pytorch.org/docs/stable/generated/torch.compile.html
+        // "--run_name", "batch_256_workers_1_cpu",
+        // "--dataloader_num_workers", "1"
       ],
       "env": {
         "ACCELERATE_MIXED_PRECISION": "bf16",
       }
+      // note: fastest seemed to be non-xformers, with single-precision. yikes.
+      // batch 128 possible with xformers + mixed. 23371MiB / 24564MiB, reached iteration 255 and beyond
+      // batch 128 also possible with sdp + mixed. 22921MiB / 24564MiB, though by iteration 150 was 24101MiB. made it to 255
+      // need to compare iteration speed somehow. and determine which xformers kernel was used.
+      // could try gradient checkpointing to trade iteration speed for batch size
+      // could try more dataloader workers to alleviate iteration bottleneck
+      // still got some loss masking to do
+      // batch 128 mixed bf16 without xformers OOMed on iteration 49. depends on random luck I think.
+      // gradient checkpointing reduces memory to 11403MiB, still batch size 128 xformers mixed, still >3it/s
     },
   ]
 }

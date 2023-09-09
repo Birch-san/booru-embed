@@ -31,7 +31,7 @@ import re
 import sys
 import warnings
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Literal
 import numpy as np
 from numpy.typing import NDArray
 from functools import partial
@@ -249,7 +249,16 @@ class DataTrainingArguments:
             )
         },
     )
+    collator_device: Literal['cpu', 'cuda'] = field(default='cpu', metadata={"help": "Device used for vectorizable operations in BooruCollator. My gut feeling is that there is enough data that CUDA should help, but in practice I think CPU is benchmarking better, especially for dataloader_num_workers>1. Maybe using CUDA whilst the model is running causes contention.", "choices": ["cpu", "cuda"]})
+    pad_to_multiple: Optional[int] = field(default=None, metadata={"help": "Collator can pad sequence lengths to a multiple. Multiples such as 8 or 64 are required to utilize tensor cores. Multiples of 8 are required to support attention bias, if --xformers is enabled."})
 
+@dataclass
+class SysArguments:
+    allow_bf16_reduced_precision_reduction: Optional[bool] = field(default=None, metadata={"help": 'torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction; https://pytorch.org/docs/stable/notes/cuda.html'})
+    allow_fp16_reduced_precision_reduction: Optional[bool] = field(default=None, metadata={"help": 'torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction; https://pytorch.org/docs/stable/notes/cuda.html'})
+    allow_tf32: Optional[bool] = field(default=None, metadata={"help": 'torch.backends.cuda.matmul.allow_tf32; https://pytorch.org/docs/stable/notes/cuda.html'})
+    cudnn_allow_tf32: Optional[bool] = field(default=None, metadata={"help": 'torch.backends.cudnn.allow_tf32; https://pytorch.org/docs/stable/notes/cuda.html'})
+    float32_matmul_precision: Optional[Literal['highest', 'high', 'medium']] = field(default=None, metadata={"help": 'torch.set_float32_matmul_precision(); https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html', "choices": ['highest', 'high', 'medium']})
 
 @dataclass
 class MyTrainingArguments:
@@ -262,13 +271,19 @@ def main():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments, MyTrainingArguments))
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments, MyTrainingArguments, SysArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args, my_training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args, my_training_args, sys_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args, my_training_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args, my_training_args, sys_args = parser.parse_args_into_dataclasses()
+    
+    if data_args.collator_device == 'cuda':
+        # I think this may only be necessary because by default we are using pinning.
+        # TODO: look up what pinning is and decide whether we want it
+        logger.info("Setting torch.multiprocessing start_method to 'spawn', because data collators will be using CUDA.")
+        torch.multiprocessing.set_start_method('spawn')
 
     if model_args.use_auth_token is not None:
         warnings.warn("The `use_auth_token` argument is deprecated and will be removed in v4.34.", FutureWarning)
@@ -286,6 +301,19 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
+
+    # https://pytorch.org/docs/stable/notes/cuda.html
+    if sys_args.allow_bf16_reduced_precision_reduction is not None:
+        torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction = sys_args.allow_bf16_reduced_precision_reduction
+    if sys_args.allow_fp16_reduced_precision_reduction is not None:    
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction = sys_args.allow_fp16_reduced_precision_reduction
+    if sys_args.allow_tf32 is not None:
+        torch.backends.cuda.matmul.allow_tf32 = sys_args.allow_tf32
+    if sys_args.cudnn_allow_tf32 is not None:
+        torch.backends.cudnn.allow_tf32 = sys_args.cudnn_allow_tf32
+    if sys_args.float32_matmul_precision is not None:
+        # https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html
+        torch.set_float32_matmul_precision(sys_args.float32_matmul_precision)
 
     nvml_service = NvmlService()
 
@@ -327,6 +355,11 @@ def main():
                 "torch_compile_mode": training_args.torch_compile_mode,
                 "resume_from_checkpoint": training_args.resume_from_checkpoint,
                 "metric_for_bet_model": training_args.metric_for_best_model,
+                "allow_bf16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_bf16_reduced_precision_reduction,
+                "allow_fp16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+                "allow_tf32": torch.backends.cuda.matmul.allow_tf32,
+                "cudnn_allow_tf32": torch.backends.cudnn.allow_tf32,
+                "float32_matmul_precision": torch.get_float32_matmul_precision(),
                 **nvml_metrics,
             }
         )
@@ -437,27 +470,7 @@ def main():
     if len(vocab.tokens) > embedding_size:
         model.resize_token_embeddings(len(vocab.tokens))
 
-    # TODO: save this into the model config or something
-    model_max_ctx_len = 255
-
-    max_seq_length: int = min(data_args.max_seq_length or model_max_ctx_len, model_max_ctx_len)
-
-    if data_args.max_seq_length is None:
-        max_seq_length = model_max_ctx_len
-        if max_seq_length > 1024:
-            logger.warning(
-                "The chosen tokenizer supports a `model_max_length` that is longer than the default `block_size` value"
-                " of 1024. If you would like to use a longer `block_size` up to `model_max_ctx_len` you can"
-                " override this default with `--block_size xxx`."
-            )
-            max_seq_length = 1024
-    else:
-        if data_args.max_seq_length > model_max_ctx_len:
-            logger.warning(
-                f"The max_seq_length passed ({data_args.max_seq_length}) is larger than the maximum length for the"
-                f"model ({model_max_ctx_len}). Using max_seq_length={model_max_ctx_len}."
-            )
-        max_seq_length = min(data_args.max_seq_length, model_max_ctx_len)
+    max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
     
     device = torch.device('cuda')
 
@@ -575,6 +588,10 @@ def main():
             preds = preds[mask]
             return metric.compute(predictions=preds, references=labels)
 
+    pad_to_multiple: Optional[int] = data_args.pad_to_multiple
+    if model_args.xformers:
+        assert pad_to_multiple is not None and pad_to_multiple % 8 == 0, "To enable xformers: you must ensure that --pad_to_multiple is set to a multiple of 8."
+
     # Data collator
     # This one will take care of randomly masking the tokens.
     data_collator = BooruDataCollatorForT5MLM(
@@ -585,7 +602,9 @@ def main():
         # vocab is optional, to aid in debugging (enables decoding of a sample)
         vocab=vocab,
         # xformers kernels only support attention bias for sequence lengths multiple of 8
-        pad_to_multiple=8 if model_args.xformers else None,
+        pad_to_multiple=pad_to_multiple,
+        pad_to_max=data_args.pad_to_max_length,
+        device=torch.device(data_args.collator_device),
     )
 
     log_every_n_steps=my_training_args.log_every_n_steps

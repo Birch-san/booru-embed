@@ -1,4 +1,3 @@
-from typing import Optional
 from transformers.configuration_utils import PretrainedConfig
 
 class T5BooruConfig(PretrainedConfig):
@@ -57,6 +56,7 @@ class T5BooruConfig(PretrainedConfig):
         d_ff=2048,
         decoder_mlp=False,
         decoder_start_token_id=0,
+        max_ctx_len=256,
         num_layers=6,
         num_decoder_layers=None,
         num_heads=8,
@@ -78,6 +78,7 @@ class T5BooruConfig(PretrainedConfig):
         self.d_kv = d_kv
         self.d_ff = d_ff
         self.decoder_mlp = decoder_mlp
+        self.max_ctx_len = max_ctx_len
         self.num_layers = num_layers
         self.num_decoder_layers = (
             num_decoder_layers if num_decoder_layers is not None else self.num_layers

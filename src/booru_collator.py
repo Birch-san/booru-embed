@@ -41,13 +41,17 @@ class BooruDataCollatorForT5MLM:
     decoder_start_token_id: int
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
-    device: torch.device = field(init=False)
+    device: torch.device = field(default_factory=lambda: torch.device('cpu'))
     # xformers kernels only support attention bias for sequence lengths multiple of 8
     pad_to_multiple: Optional[int] = None
+    pad_to_max: bool = False
+    max_length: Optional[int] = None
 
     def __post_init__(self):
-        self.device = torch.device('cuda')
         assert self.pad_token_id == 0, 'we currently employ in filter_input_ids a condition which ignores both -1 tokens and pad tokens via the criteria `<= 0` (on the basis it may be cheaper than `!= -1 & != self.pad_token_id`). to use a non-zero pad_token_id: we would need to remove this optimization.'
+        if self.pad_to_max:
+            assert self.max_length is not None, 'You have requested pad_to_max, but you have not specified a max_length'
+            assert self.max_length % self.pad_to_multiple == 0, f'You have requested pad_to_multiple={self.pad_to_multiple}, and pad_to_max=True. This requires your max_length={self.max_length} to be a multiple of pad_to_multiple={self.pad_to_multiple}.'
 
     def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
         # tensorize input
@@ -64,6 +68,7 @@ class BooruDataCollatorForT5MLM:
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
+        # TODO: these can be done in parallel. try non_blocking=True
         input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
 
@@ -79,9 +84,11 @@ class BooruDataCollatorForT5MLM:
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
         decoder_attention_mask: BoolTensor = batch_labels != self.pad_token_id
 
-        if self.pad_to_multiple is not None:
+        if self.pad_to_multiple is not None or self.pad_to_max:
             input_length = batch_input_ids.shape[-1]
-            input_extra_tokens_needed = self.pad_to_multiple - (input_length % self.pad_to_multiple)
+            input_extra_tokens_needed: int = self.max_length - input_length if self.pad_to_max else (
+                self.pad_to_multiple - (input_length % self.pad_to_multiple)
+            )
             # pad to multiple of (for example, 8) tokens
             batch_input_ids = pad(batch_input_ids, pad=(0, input_extra_tokens_needed), value=self.pad_token_id)
             attention_mask = pad(attention_mask, pad=(0, input_extra_tokens_needed))
@@ -89,9 +96,17 @@ class BooruDataCollatorForT5MLM:
             # TODO: do labels need padding too?
             # TODO: is it actually (input_ids + labels) we need to pad, rather than the sequences individually?
             label_length = batch_labels.shape[-1]
-            label_extra_tokens_needed = self.pad_to_multiple - (label_length % self.pad_to_multiple)
+            label_extra_tokens_needed: int = self.max_length - label_length if self.pad_to_max else (
+                self.pad_to_multiple - (label_length % self.pad_to_multiple)
+            )
             batch_labels = pad(batch_labels, pad=(0, label_extra_tokens_needed), value=self.pad_token_id)
             decoder_attention_mask = pad(decoder_attention_mask, pad=(0, label_extra_tokens_needed))
+        
+        if self.max_length is not None:
+            assert batch_input_ids.shape[-1] <= self.max_length
+            assert attention_mask.shape[-1] <= self.max_length
+            assert batch_labels.shape[-1] <= self.max_length
+            assert decoder_attention_mask.shape[-1] <= self.max_length
 
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),

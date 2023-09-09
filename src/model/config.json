@@ -13,6 +13,7 @@
   "initializer_factor": 1.0,
   "is_encoder_decoder": true,
   "layer_norm_epsilon": 1e-06,
+  "max_ctx_len": 256,
   "model_type": "t5",
   "num_decoder_layers": 8,
   "num_heads": 6,
