@@ -5,7 +5,7 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
-InterStepMetrics = TypedDict("Event", {
+IntraStepMetrics = TypedDict("IntraStepMetrics", {
   'perf/intrastep_s': float,
   'perf/intrastep_s_avg': float,
 })
@@ -16,7 +16,7 @@ class IntraStepDurationCallback(TrainerCallback):
   to tell you how long it takes to iterate to the next batch from your data collator
   """
   intrastep_tic: Optional[float] = None
-  metrics: InterStepMetrics = {
+  metrics: IntraStepMetrics = {
     'perf/intrastep_s': 0.,
     'perf/intrastep_s_avg': 0.,
   }

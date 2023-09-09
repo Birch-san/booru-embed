@@ -5,7 +5,7 @@ from logging import getLogger
 
 logger = getLogger(__name__)
 
-InterStepMetrics = TypedDict("Event", {
+InterStepMetrics = TypedDict("InterStepMetrics", {
   'perf/interstep_s': float,
   'perf/interstep_s_avg': float,
 })
