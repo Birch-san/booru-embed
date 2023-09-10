@@ -23,7 +23,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
 from torch import nn, FloatTensor, LongTensor, BoolTensor
-from torch.nn import LogSoftmax, Conv1d, Embedding
+from torch.nn import LogSoftmax, NLLLoss, Conv1d, Embedding
 from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
 
@@ -1663,7 +1663,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     ]
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
 
-    loss_fn: LogSoftmax
+    log_softmax_fn: LogSoftmax
+    nll_loss_no_reduce_fn: NLLLoss
+    nll_loss_reduce_fn: NLLLoss
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
@@ -1691,7 +1693,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-        self.loss_fn = LogSoftmax(dim=-1)
+        self.log_softmax_fn = LogSoftmax(dim=-1)
+        self.nll_loss_no_reduce_fn = NLLLoss(reduction='none')
+        self.nll_loss_reduce_fn = NLLLoss()
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1941,10 +1945,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         loss = None
         if labels is not None:
             # move labels to correct device to enable PP
-            labels: LongTensor = labels.to(lm_logits.device)
-            # labels needs to be one-hot, broadcastable to `[..., num_classes]`
-            # one_hot only supports "index tensors" (which apparently means it doesn't accept int or short)
-            labels_oh: LongTensor = one_hot(labels.long(), lm_logits.size(-1))
+            labels: LongTensor = labels.to(lm_logits.device, dtype=torch.long)
 
             # TODO: compare with t5x
             # https://github.com/google-research/t5x/blob/77d2624e65799e3bea15586eb1d3fe7c63477a92/t5x/models.py#L738
@@ -1958,11 +1959,16 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                 log_z: FloatTensor = lm_logits.logsumexp(dim=-1)
                 log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
             else:
-                log_softmax: FloatTensor = self.loss_fn(lm_logits)
-            loss: FloatTensor = log_softmax.mul(labels_oh).sum(dim=-1).neg()
+                log_softmax: FloatTensor = self.log_softmax_fn(lm_logits)
+            nll_inputs: FloatTensor = log_softmax.flatten(end_dim=-2)
+            nll_labels: LongTensor = labels.flatten()
             if z_loss is not None and z_loss > 0.:
+                loss: FloatTensor = self.nll_loss_no_reduce_fn(nll_inputs, nll_labels)
+                loss = loss.unflatten(0, labels.shape)
                 loss += z_loss * log_z ** 2
-            loss = loss.mean()
+                loss = loss.mean()
+            else:
+                loss = self.nll_loss_reduce_fn(nll_inputs, nll_labels)
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
