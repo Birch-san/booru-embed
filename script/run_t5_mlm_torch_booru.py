@@ -64,7 +64,8 @@ from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
 from src.booru_special_tokens import SpecialToken, make_mask_token, make_vocab_pad_token
-from src.booru_collator import BooruDataCollatorForT5MLM
+from src.booru_collator_t5_mlm import BooruDataCollatorForT5MLM
+from src.booru_collator_replay import BooruReplayCollator
 from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
 from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
@@ -253,6 +254,7 @@ class DataTrainingArguments:
     )
     collator_device: Literal['cpu', 'cuda'] = field(default='cpu', metadata={"help": "Device used for vectorizable operations in BooruCollator. My gut feeling is that there is enough data that CUDA should help, but in practice I think CPU is benchmarking better, especially for dataloader_num_workers>1. Maybe using CUDA whilst the model is running causes contention.", "choices": ["cpu", "cuda"]})
     pad_to_multiple: Optional[int] = field(default=None, metadata={"help": "Collator can pad sequence lengths to a multiple. Multiples such as 8 or 64 are required to utilize tensor cores. Multiples of 8 are required to support attention bias, if --xformers is enabled."})
+    replay_collator: bool = field(default=False, metadata={"help": 'Caches and replays first result from data collator, to minimize data collator overhead for the purposes of performance measurement.'})
 
 @dataclass
 class SysArguments:
@@ -614,6 +616,8 @@ def main():
         max_length=max_seq_length,
         device=torch.device(data_args.collator_device),
     )
+    if data_args.replay_collator:
+        data_collator = BooruReplayCollator(data_collator)
 
     log_every_n_steps=my_training_args.log_every_n_steps
     callbacks: List[TrainerCallback] = [
