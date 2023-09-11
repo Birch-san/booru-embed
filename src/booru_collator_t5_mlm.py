@@ -5,11 +5,10 @@ import numpy as np
 from numpy.typing import NDArray
 import torch
 from torch import ByteTensor, BoolTensor, ShortTensor, full
-from torch.nn.functional import pad
 
 from .booru_dataset import BooruDatum
 from .vocab import Vocab
-from .ceil_to_multiple import remaining_to_multiple
+from .ceil_to_multiple import ceil_to_multiple
 from .booru_collator import BooruCollator, BooruBatchData
 
 @dataclass
@@ -69,36 +68,17 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
 
-        # TODO: maybe insertion of conv and EOS tokens should be job of collator
-        # so that they can't be masked-out
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
-        # TODO: these are still on-GPU, and this is multiprocess. does that leak? can they be sent inter-process? is a queue required?
         batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
         batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index)
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
         decoder_attention_mask: BoolTensor = batch_labels != self.label_ignore_index
-        
-        if self.max_length is not None:
-            assert batch_input_ids.shape[-1] <= self.max_length
-            assert attention_mask.shape[-1] <= self.max_length
-            assert batch_labels.shape[-1] <= self.max_length
-            assert decoder_attention_mask.shape[-1] <= self.max_length
 
-        if self.pad_to_multiple is not None:
-            input_length = batch_input_ids.shape[-1]
-            input_extra_tokens_needed: int = remaining_to_multiple(input_length, self.pad_to_multiple)
-            # pad to multiple of (for example, 8) tokens
-            batch_input_ids = pad(batch_input_ids, pad=(0, input_extra_tokens_needed), value=self.pad_token_id)
-            attention_mask = pad(attention_mask, pad=(0, input_extra_tokens_needed))
-
-            # TODO: do labels need padding too?
-            # TODO: is it actually (input_ids + labels) we need to pad, rather than the sequences individually?
-            label_length = batch_labels.shape[-1]
-            label_extra_tokens_needed: int = remaining_to_multiple(label_length, self.pad_to_multiple)
-            batch_labels = pad(batch_labels, pad=(0, label_extra_tokens_needed), value=self.label_ignore_index)
-            decoder_attention_mask = pad(decoder_attention_mask, pad=(0, label_extra_tokens_needed))
-
+        # verify that batch_input_ids ends with </s> followed by padding √
+        # verify that attention mask reveals </s> √
+        # verify that batch_labels ends with </s> followed by padding √
+        # verify that decoder_attention_mask reveals </s> √
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
@@ -133,8 +113,13 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         """
         input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids.bool(), input_ids)
         longest_after_masking: int = (input_ids_full > self.pad_token_id).sum(-1).max().item()
+        desired_length: int = longest_after_masking+1
+        if self.pad_to_multiple is not None:
+            desired_length = ceil_to_multiple(desired_length, self.pad_to_multiple)
+        if self.max_length is not None:
+            assert desired_length <= self.max_length
         retaineds: ByteTensor = full(
-            (input_ids_full.size(0), longest_after_masking+1),
+            (input_ids_full.size(0), desired_length),
             fill_value=result_pad,
             dtype=input_ids.dtype,
             device=input_ids.device,

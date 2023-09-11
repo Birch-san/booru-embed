@@ -1892,6 +1892,14 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
+        # for packed: there is an invariant that:
+        # - labels ends with </s>
+        # - decoder_input_ids rolls the </s> to the front, then overwrites it with decoder_start_token_id
+        #   - so decoder_input_ids isn't actually meant to include any </s>, except those occurring due to packing
+        # - in padded case: it's likely that </s> wasn't the final token, so doesn't get overwritten by roll + replace.
+        #   - so we should remove any </s> in our sequence (it's not meant to be there), replacing with pad.
+        #   - and if our decoder_attention_mask was revealing that position: we need to tell it not to.
+        #   - actually this may be easier in collator. let's have it pass in a compliant decoder_input_ids.
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids: LongTensor = self._shift_right(labels.int())
