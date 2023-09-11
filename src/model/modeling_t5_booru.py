@@ -952,24 +952,22 @@ class T5BooruPreTrainedModel(PreTrainedModel):
         if isinstance(module, (T5BooruAttention, T5BooruStack)):
             module.gradient_checkpointing = value
 
-    def _shift_right(self, input_ids: LongTensor, token0_fill_value: Optional[int|bool] = None) -> LongTensor:
+    def _shift_right(self, input_ids: LongTensor) -> LongTensor:
         pad_token_id = self.config.pad_token_id
-        if token0_fill_value is None:
-            if self.config.decoder_start_token_id is None:
-                raise ValueError(
-                    "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id."
-                    "See T5 docs for more information."
-                )
-            token0_fill_value = self.config.decoder_start_token_id
+        if self.config.decoder_start_token_id is None:
+            raise ValueError(
+                "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id."
+                "See T5 docs for more information."
+            )
 
         # shift inputs to the right
         if is_torch_fx_proxy(input_ids):
             # Item assignment is not supported natively for proxies.
-            shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), token0_fill_value)
+            shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), self.config.decoder_start_token_id)
             shifted_input_ids = torch.cat([shifted_input_ids, input_ids[..., :-1]], dim=-1)
         else:
             shifted_input_ids = input_ids.detach().roll(1)
-            shifted_input_ids[..., 0] = token0_fill_value
+            shifted_input_ids[..., 0] = self.config.decoder_start_token_id
 
         if pad_token_id is None:
             raise ValueError("self.model.config.pad_token_id has to be defined.")
@@ -1892,21 +1890,10 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         if self.model_parallel:
             torch.cuda.set_device(self.decoder.first_device)
 
-        # for packed: there is an invariant that:
-        # - labels ends with </s>
-        # - decoder_input_ids rolls the </s> to the front, then overwrites it with decoder_start_token_id
-        #   - so decoder_input_ids isn't actually meant to include any </s>, except those occurring due to packing
-        # - in padded case: it's likely that </s> wasn't the final token, so doesn't get overwritten by roll + replace.
-        #   - so we should remove any </s> in our sequence (it's not meant to be there), replacing with pad.
-        #   - and if our decoder_attention_mask was revealing that position: we need to tell it not to.
-        #   - actually this may be easier in collator. let's have it pass in a compliant decoder_input_ids.
         if labels is not None and decoder_input_ids is None and decoder_inputs_embeds is None:
+            assert decoder_attention_mask is None, "we could create decoder_input_ids by shifting your labels, but you have provided a decoder_attention_mask, and we don't know whether it's a mask for the labels (which we don't need) or a mask for the decoder_input_ids (which you've never seen). you should pass in decoder_input_ids and its corresponding decoder_attention_mask."
             # get decoder inputs from shifting lm labels to the right
             decoder_input_ids: LongTensor = self._shift_right(labels.int())
-
-        shifted_decoder_attention_mask: Optional[BoolTensor] = None
-        if decoder_attention_mask is not None:
-            shifted_decoder_attention_mask = self._shift_right(decoder_attention_mask, token0_fill_value=True)
 
         # Set device for model parallelism
         if self.model_parallel:
@@ -1916,13 +1903,13 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                 decoder_input_ids = decoder_input_ids.to(self.decoder.first_device)
             if attention_mask is not None:
                 attention_mask = attention_mask.to(self.decoder.first_device)
-            if shifted_decoder_attention_mask is not None:
-                shifted_decoder_attention_mask = shifted_decoder_attention_mask.to(self.decoder.first_device)
+            if decoder_attention_mask is not None:
+                decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
-            attention_mask=shifted_decoder_attention_mask,
+            attention_mask=decoder_attention_mask,
             inputs_embeds=decoder_inputs_embeds,
             past_key_values=past_key_values,
             encoder_hidden_states=hidden_states,

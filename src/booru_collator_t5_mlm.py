@@ -1,15 +1,20 @@
 from dataclasses import dataclass, field
 from transformers import BatchEncoding
-from typing import List, Optional
+from typing import List, Optional, NamedTuple, Iterable
 import numpy as np
 from numpy.typing import NDArray
 import torch
 from torch import ByteTensor, BoolTensor, ShortTensor, full
+from itertools import repeat
 
 from .booru_dataset import BooruDatum
 from .vocab import Vocab
 from .ceil_to_multiple import ceil_to_multiple
 from .booru_collator import BooruCollator, BooruBatchData
+
+class FilteredTokens(NamedTuple):
+    output: ShortTensor
+    rolled_output: Optional[ShortTensor]
 
 @dataclass
 class BooruDataCollatorForT5MLM(BooruCollator):
@@ -41,6 +46,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
     pad_to_multiple: Optional[int] = None
     pad_to_max: bool = False
     max_length: Optional[int] = None
+    endless_none: Iterable[None] = field(default_factory=lambda: repeat(None))
 
     def __post_init__(self):
         assert self.pad_token_id == 0, 'we currently employ in filter_input_ids a condition which ignores both -1 tokens and pad tokens via the criteria `<= 0` (on the basis it may be cheaper than `!= -1 & != self.pad_token_id`). to use a non-zero pad_token_id: we would need to remove this optimization.'
@@ -61,7 +67,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             input_ids[ix, :caption_len] = caption
             mask_indices[ix, :caption_len] = mask_indices_
         
-        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
+        # [[-100 if token_ix == -100 else self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
         # TODO: these can be done in parallel. try non_blocking=True
@@ -69,20 +75,20 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
 
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
-        batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
-        batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index)
+        batch_input_ids, _ = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
+        batch_labels, decoder_input_ids = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index, output_rolled=True)
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
-        decoder_attention_mask: BoolTensor = batch_labels != self.label_ignore_index
+        decoder_attention_mask: BoolTensor = decoder_input_ids != self.label_ignore_index
 
         # verify that batch_input_ids ends with </s> followed by padding √
         # verify that attention mask reveals </s> √
         # verify that batch_labels ends with </s> followed by padding √
-        # verify that decoder_attention_mask reveals </s> √
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
             labels=batch_labels.detach().cpu(),
+            decoder_input_ids=decoder_input_ids.detach().cpu(),
             decoder_attention_mask=decoder_attention_mask.detach().cpu(),
         )
         batch_encoding = BatchEncoding(
@@ -106,7 +112,13 @@ class BooruDataCollatorForT5MLM(BooruCollator):
 
         return sentinel_ids
 
-    def filter_input_ids(self, input_ids: ShortTensor, sentinel_ids: ByteTensor, result_pad: int) -> ShortTensor:
+    def filter_input_ids(
+            self,
+            input_ids: ShortTensor,
+            sentinel_ids: ByteTensor,
+            result_pad: int,
+            output_rolled = False,
+        ) -> FilteredTokens:
         """
         Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
         This will reduce the sequence length.
@@ -118,15 +130,19 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             desired_length = ceil_to_multiple(desired_length, self.pad_to_multiple)
         if self.max_length is not None:
             assert desired_length <= self.max_length
-        retaineds: ByteTensor = full(
+        retaineds: ShortTensor = full(
             (input_ids_full.size(0), desired_length),
             fill_value=result_pad,
             dtype=input_ids.dtype,
             device=input_ids.device,
         )
-        for out_row, in_row, retain in zip(retaineds, input_ids_full, input_ids_full > self.pad_token_id):
+        rolleds: Optional[ShortTensor] = retaineds.clone() if output_rolled else None
+        for out_row, out_rolled_row, in_row, retain in zip(retaineds, rolleds if output_rolled else self.endless_none, input_ids_full, input_ids_full > self.pad_token_id):
             retained: ByteTensor = in_row.masked_select(retain)
-            out_row[:retained.size(-1)] = retained
             out_row[retained.size(-1)] = self.eos_token_id
+            out_row[:retained.size(-1)] = retained
+            if output_rolled:
+                out_rolled_row[1:1+retained.size(-1)] = retained
+                out_rolled_row[0] = self.decoder_start_token_id
 
-        return retaineds
+        return FilteredTokens(retaineds, rolleds if output_rolled else None)
