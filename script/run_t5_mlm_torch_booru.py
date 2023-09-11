@@ -606,8 +606,9 @@ def main():
     data_collator = BooruDataCollatorForT5MLM(
         eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
         pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
+        label_ignore_index=config.label_ignore_index,
         sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
-        decoder_start_token_id=model.config.decoder_start_token_id,
+        decoder_start_token_id=config.decoder_start_token_id,
         # vocab is optional, to aid in debugging (enables decoding of a sample)
         vocab=vocab,
         # xformers kernels only support attention bias for sequence lengths multiple of 8

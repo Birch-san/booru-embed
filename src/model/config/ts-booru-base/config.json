@@ -12,6 +12,7 @@
   "feed_forward_proj": "gated-gelu",
   "initializer_factor": 1.0,
   "is_encoder_decoder": true,
+  "label_ignore_index": -100,
   "layer_norm_epsilon": 1e-06,
   "max_ctx_len": 256,
   "model_type": "t5",

@@ -33,6 +33,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
     eos_token_id: int
     sentinel_start_ix: int
     pad_token_id: int
+    label_ignore_index: int
     decoder_start_token_id: int
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
@@ -72,11 +73,11 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         # so that they can't be masked-out
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
         # TODO: these are still on-GPU, and this is multiprocess. does that leak? can they be sent inter-process? is a queue required?
-        batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t)
-        batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t)
+        batch_input_ids: ShortTensor = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
+        batch_labels: ShortTensor = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index)
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
-        decoder_attention_mask: BoolTensor = batch_labels != self.pad_token_id
+        decoder_attention_mask: BoolTensor = batch_labels != self.label_ignore_index
         
         if self.max_length is not None:
             assert batch_input_ids.shape[-1] <= self.max_length
@@ -95,7 +96,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             # TODO: is it actually (input_ids + labels) we need to pad, rather than the sequences individually?
             label_length = batch_labels.shape[-1]
             label_extra_tokens_needed: int = remaining_to_multiple(label_length, self.pad_to_multiple)
-            batch_labels = pad(batch_labels, pad=(0, label_extra_tokens_needed), value=self.pad_token_id)
+            batch_labels = pad(batch_labels, pad=(0, label_extra_tokens_needed), value=self.label_ignore_index)
             decoder_attention_mask = pad(decoder_attention_mask, pad=(0, label_extra_tokens_needed))
 
         data = BooruBatchData(
@@ -125,7 +126,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
 
         return sentinel_ids
 
-    def filter_input_ids(self, input_ids: ShortTensor, sentinel_ids: ByteTensor) -> ShortTensor:
+    def filter_input_ids(self, input_ids: ShortTensor, sentinel_ids: ByteTensor, result_pad: int) -> ShortTensor:
         """
         Puts sentinel mask on `input_ids` and fuse consecutive mask tokens into a single mask token by deleting.
         This will reduce the sequence length.
@@ -134,7 +135,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         longest_after_masking: int = (input_ids_full > self.pad_token_id).sum(-1).max().item()
         retaineds: ByteTensor = full(
             (input_ids_full.size(0), longest_after_masking+1),
-            fill_value=self.pad_token_id,
+            fill_value=result_pad,
             dtype=input_ids.dtype,
             device=input_ids.device,
         )

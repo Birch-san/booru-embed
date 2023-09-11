@@ -952,29 +952,29 @@ class T5BooruPreTrainedModel(PreTrainedModel):
         if isinstance(module, (T5BooruAttention, T5BooruStack)):
             module.gradient_checkpointing = value
 
-    def _shift_right(self, input_ids: LongTensor) -> LongTensor:
-        decoder_start_token_id = self.config.decoder_start_token_id
+    def _shift_right(self, input_ids: LongTensor, token0_fill_value: Optional[int|bool] = None) -> LongTensor:
         pad_token_id = self.config.pad_token_id
-
-        if decoder_start_token_id is None:
-            raise ValueError(
-                "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id."
-                "See T5 docs for more information."
-            )
+        if token0_fill_value is None:
+            if self.config.decoder_start_token_id is None:
+                raise ValueError(
+                    "self.model.config.decoder_start_token_id has to be defined. In T5 it is usually set to the pad_token_id."
+                    "See T5 docs for more information."
+                )
+            token0_fill_value = self.config.decoder_start_token_id
 
         # shift inputs to the right
         if is_torch_fx_proxy(input_ids):
             # Item assignment is not supported natively for proxies.
-            shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), decoder_start_token_id)
+            shifted_input_ids = torch.full(input_ids.shape[:-1] + (1,), token0_fill_value)
             shifted_input_ids = torch.cat([shifted_input_ids, input_ids[..., :-1]], dim=-1)
         else:
             shifted_input_ids = input_ids.detach().roll(1)
-            shifted_input_ids[..., 0] = decoder_start_token_id
+            shifted_input_ids[..., 0] = token0_fill_value
 
         if pad_token_id is None:
             raise ValueError("self.model.config.pad_token_id has to be defined.")
         # replace possible -100 values in labels by `pad_token_id`
-        shifted_input_ids.masked_fill_(shifted_input_ids == -100, pad_token_id)
+        shifted_input_ids.masked_fill_(shifted_input_ids == self.config.label_ignore_index, pad_token_id)
 
         return shifted_input_ids
 
@@ -1693,9 +1693,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
-        self.cross_entropy_loss_fn = CrossEntropyLoss()
+        self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.log_softmax_fn = LogSoftmax(dim=-1)
-        self.nll_loss_fn = NLLLoss(reduction='none')
+        self.nll_loss_fn = NLLLoss(reduction='none', ignore_index=self.config.label_ignore_index)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1898,7 +1898,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         shifted_decoder_attention_mask: Optional[BoolTensor] = None
         if decoder_attention_mask is not None:
-            shifted_decoder_attention_mask = self._shift_right(decoder_attention_mask)
+            shifted_decoder_attention_mask = self._shift_right(decoder_attention_mask, token0_fill_value=True)
 
         # Set device for model parallelism
         if self.model_parallel:

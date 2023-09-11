@@ -64,6 +64,7 @@ class T5BooruConfig(PretrainedConfig):
         relative_attention_num_buckets=32,
         relative_attention_max_distance=128,
         dropout_rate=0.1,
+        label_ignore_index=-100,
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
         feed_forward_proj="relu",
@@ -91,6 +92,7 @@ class T5BooruConfig(PretrainedConfig):
         self.relative_attention_num_buckets = relative_attention_num_buckets
         self.relative_attention_max_distance = relative_attention_max_distance
         self.dropout_rate = dropout_rate
+        self.label_ignore_index = label_ignore_index
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
