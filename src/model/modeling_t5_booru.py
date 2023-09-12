@@ -1939,9 +1939,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         loss = None
         if labels is not None:
-            labels_shape_orig = labels.shape
             # move labels to correct device to enable PP
-            labels: LongTensor = labels.to(lm_logits.device, dtype=torch.long).flatten()
+            labels: LongTensor = labels.to(lm_logits.device, dtype=torch.long)
+            labels_flat: LongTensor = labels.flatten()
 
             # TODO: compare with t5x
             # https://github.com/google-research/t5x/blob/77d2624e65799e3bea15586eb1d3fe7c63477a92/t5x/models.py#L738
@@ -1952,13 +1952,14 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             # - to not drift too far from zero (which can cause unacceptable roundoff errors in bfloat16)
             # - to be normalized log-probabilities
             if z_loss is None or z_loss == 0.:
-                loss = self.cross_entropy_loss_fn(lm_logits.flatten(end_dim=-2), labels)
+                loss = self.cross_entropy_loss_fn(lm_logits.flatten(end_dim=-2), labels_flat)
             else:
                 log_z: FloatTensor = lm_logits.logsumexp(dim=-1)
                 log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
-                loss: FloatTensor = self.nll_loss_fn(log_softmax.flatten(end_dim=-2), labels)
-                loss = loss.unflatten(0, labels_shape_orig)
-                loss += z_loss * log_z ** 2
+                loss: FloatTensor = self.nll_loss_fn(log_softmax.flatten(end_dim=-2), labels_flat)
+                loss = loss.unflatten(0, labels.shape)
+                masked_log_z: FloatTensor = log_z.where(labels != self.config.label_ignore_index, 0)
+                loss += z_loss * masked_log_z ** 2
                 loss = loss.mean()
 
         if not return_dict:
