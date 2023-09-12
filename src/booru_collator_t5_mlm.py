@@ -67,7 +67,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             input_ids[ix, :caption_len] = caption
             mask_indices[ix, :caption_len] = mask_indices_
         
-        # [[-100 if token_ix == -100 else self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
         # TODO: these can be done in parallel. try non_blocking=True
@@ -77,13 +77,26 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
         batch_input_ids, _ = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
         batch_labels, decoder_input_ids = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index, output_rolled=True)
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in batch_input_ids]
+        # [[-100 if token_ix == -100 else self.vocab.tokens[token_ix] for token_ix in caption] for caption in batch_labels]
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in decoder_input_ids]
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
-        decoder_attention_mask: BoolTensor = decoder_input_ids != self.label_ignore_index
+        decoder_attention_mask: BoolTensor = decoder_input_ids != self.pad_token_id
+        # attend to decoder_start_ix, which (being a pad token) was an unintended casualty
+        decoder_attention_mask[:,0] = True
+        # [[token_ix.item() for token_ix in caption] for caption in attention_mask]
+        # [[token_ix.item() for token_ix in caption] for caption in decoder_attention_mask]
 
         # verify that batch_input_ids ends with </s> followed by padding √
         # verify that attention mask reveals </s> √
         # verify that batch_labels ends with </s> followed by padding √
+        # verify that decoder_input_ids is batch_labels but rolled right once, with:
+        # - final </s> replaced by PAD √
+        # - first token becomes PAD √
+        # - padded with PAD instead of -100 √
+        # verify that attention_mask is based on batch_input_ids; False iff pad √
+        # verify that decoder_attention_mask is based on decoder_input_ids; first token is True, thereafter False iff pad √
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
@@ -126,17 +139,26 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         input_ids_full: ByteTensor = sentinel_ids.where(sentinel_ids.bool(), input_ids)
         longest_after_masking: int = (input_ids_full > self.pad_token_id).sum(-1).max().item()
         desired_length: int = longest_after_masking+1
+        if self.max_length is not None:
+            # we assert before ceil_to_multiple, to ensure pad_to_max doesn't round up a >max_length caption to 2*max_length
+            assert desired_length <= self.max_length
         if self.pad_to_multiple is not None:
             desired_length = ceil_to_multiple(desired_length, self.pad_to_multiple)
-        if self.max_length is not None:
-            assert desired_length <= self.max_length
         retaineds: ShortTensor = full(
             (input_ids_full.size(0), desired_length),
             fill_value=result_pad,
             dtype=input_ids.dtype,
             device=input_ids.device,
         )
-        rolleds: Optional[ShortTensor] = retaineds.clone() if output_rolled else None
+        if output_rolled:
+            rolleds: ShortTensor = full(
+                (input_ids_full.size(0), desired_length),
+                fill_value=self.pad_token_id,
+                dtype=input_ids.dtype,
+                device=input_ids.device,
+            )
+        else:
+            rolleds: Optional[ShortTensor] = None
         for out_row, out_rolled_row, in_row, retain in zip(retaineds, rolleds if output_rolled else self.endless_none, input_ids_full, input_ids_full > self.pad_token_id):
             retained: ByteTensor = in_row.masked_select(retain)
             out_row[retained.size(-1)] = self.eos_token_id
