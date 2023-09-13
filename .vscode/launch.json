@@ -187,5 +187,12 @@
       // batch 128 mixed bf16 without xformers OOMed on iteration 49. depends on random luck I think.
       // gradient checkpointing reduces memory to 11403MiB, still batch size 128 xformers mixed, still >3it/s
     },
+    {
+      "name": "Python: Loss benchmark",
+      "type": "python",
+      "request": "launch",
+      "module": "script.loss_bench",
+      "justMyCode": false
+    }
   ]
 }
