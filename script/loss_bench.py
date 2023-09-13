@@ -65,11 +65,11 @@ def bench(f: Callable[[], None], name=None, iters=100, warmup=5, display=True, p
         prof.export_chrome_trace(f"{name if name is not None else 'trace'}.json")
 
     torch.cuda.synchronize()
-    begin = time.time()
+    begin = time.perf_counter()
     for _ in range(iters):
         f()
     torch.cuda.synchronize()
-    us_per_iter = (time.time()-begin)*1e6/iters
+    us_per_iter = (time.perf_counter()-begin)*1e6/iters
     if name is None:
         res = us_per_iter
     else:
