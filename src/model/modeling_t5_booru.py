@@ -1960,7 +1960,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                 loss = loss.unflatten(0, labels.shape)
                 masked_log_z: FloatTensor = log_z.where(labels != self.config.label_ignore_index, 0)
                 loss += z_loss * masked_log_z ** 2
-                loss = loss.mean()
+                nonignored_token_count: LongTensor = labels.numel() - (labels == self.config.label_ignore_index).sum()
+                loss = loss.sum() / nonignored_token_count
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
