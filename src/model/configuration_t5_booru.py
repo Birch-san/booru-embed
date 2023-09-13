@@ -70,6 +70,8 @@ class T5BooruConfig(PretrainedConfig):
         feed_forward_proj="relu",
         use_conv_in=True,
         is_encoder_decoder=True,
+        tie_encoder_ffns=True,
+        tie_word_embeddings=False,
         use_cache=True,
         pad_vocab_to_multiple=8,
         pad_token_id=0,
@@ -96,6 +98,7 @@ class T5BooruConfig(PretrainedConfig):
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
+        self.tie_encoder_ffns = tie_encoder_ffns
         self.use_conv_in = use_conv_in
         self.use_cache = use_cache
 
@@ -119,5 +122,6 @@ class T5BooruConfig(PretrainedConfig):
             decoder_start_token_id=decoder_start_token_id,
             eos_token_id=eos_token_id,
             is_encoder_decoder=is_encoder_decoder,
+            tie_word_embeddings=tie_word_embeddings,
             **kwargs,
         )

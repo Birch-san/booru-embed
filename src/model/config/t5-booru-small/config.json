@@ -22,6 +22,7 @@
   "output_past": true,
   "pad_token_id": 0,
   "relative_attention_num_buckets": 32,
+  "tie_encoder_ffns": true,
   "tie_word_embeddings": false,
   "use_conv_in": true,
   "vocab_size_nominal": 32169,

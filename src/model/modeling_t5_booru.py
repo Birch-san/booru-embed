@@ -752,14 +752,26 @@ class T5BooruBlock(nn.Module):
     self_attn: T5BooruLayerSelfAttention
     cross_attn: Optional[T5BooruLayerCrossAttention]
     ffn: Optional[T5BooruLayerFF]
-    def __init__(self, config, has_relative_attention_bias=False):
+    def __init__(
+        self,
+        config,
+        has_relative_attention_bias=False,
+        tied_ffn: Optional[T5BooruLayerFF] = None,
+    ):
         super().__init__()
         self.is_decoder = config.is_decoder
         self.self_attn = T5BooruLayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias)
         if self.is_decoder:
             self.cross_attn = T5BooruLayerCrossAttention(config)
-
-        self.ffn = T5BooruLayerFF(config) if config.decoder_mlp or not self.is_decoder else None
+        
+        if config.is_decoder:
+            assert tied_ffn is None, "tying of FFN is not implemented for decoders; we are following 'One Wide FeedForward is All You Need', whose advice for decoders is to remove FFN rather than tie it"
+            self.ffn = T5BooruLayerFF(config) if config.decoder_mlp else None
+        elif config.tie_encoder_ffns:
+            assert tied_ffn is not None
+            self.ffn = tied_ffn
+        else:
+            self.ffn = T5BooruLayerFF(config)
 
     def forward(
         self,
@@ -986,6 +998,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self,
         config: T5BooruConfig,
         embed_tokens: Optional[Embedding] = None,
+        tied_ffn: Optional[T5BooruLayerFF] = None,
     ):
         super().__init__(config)
 
@@ -996,7 +1009,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
             self.conv_in = Conv1d(in_channels=config.d_model, out_channels=config.d_model, kernel_size=3, padding=1)
 
         self.block = nn.ModuleList(
-            [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0)) for i in range(config.num_layers)]
+            [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0), tied_ffn=tied_ffn) for i in range(config.num_layers)]
         )
         self.final_layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
@@ -1469,7 +1482,20 @@ class T5BooruModel(T5BooruPreTrainedModel):
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5BooruStack(encoder_config, self.shared)
+
+        if encoder_config.tie_encoder_ffns:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.extend([
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                ])
+            tied_ffn = T5BooruLayerFF(encoder_config)
+        else:
+            tied_ffn: Optional[T5BooruLayerFF] = None
+
+        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
@@ -1681,7 +1707,20 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5BooruStack(encoder_config, self.shared)
+
+        if encoder_config.tie_encoder_ffns:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.extend([
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                ])
+            tied_ffn = T5BooruLayerFF(encoder_config)
+        else:
+            tied_ffn: Optional[T5BooruLayerFF] = None
+
+        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
@@ -2056,7 +2095,20 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
         encoder_config.is_encoder_decoder = False
-        self.encoder = T5BooruStack(encoder_config, self.shared)
+
+        if encoder_config.tie_encoder_ffns:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.extend([
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                ])
+            tied_ffn = T5BooruLayerFF(encoder_config)
+        else:
+            tied_ffn: Optional[T5BooruLayerFF] = None
+
+        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
 
         # Initialize weights and apply final processing
         self.post_init()
