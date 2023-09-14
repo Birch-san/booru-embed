@@ -1,5 +1,12 @@
 from transformers.configuration_utils import PretrainedConfig
 from ..ceil_to_multiple import ceil_to_multiple
+from typing import TypedDict
+
+class SReparamConfig(TypedDict):
+    n_iters: int
+    n_iters_init: int
+    eps: float
+    learn_gamma: bool
 
 class T5BooruConfig(PretrainedConfig):
     r"""
@@ -72,10 +79,17 @@ class T5BooruConfig(PretrainedConfig):
         is_encoder_decoder=True,
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
+        use_sigma_reparam=False,
         use_cache=True,
         pad_vocab_to_multiple=8,
         pad_token_id=0,
         eos_token_id=1,
+        s_reparam_config=SReparamConfig(
+            n_iters=1,
+            n_iters_init=15,
+            eps=1e-12,
+            learn_gamma=True,
+        ),
         **kwargs,
     ):
         self.vocab_size_nominal = vocab_size_nominal
@@ -100,6 +114,8 @@ class T5BooruConfig(PretrainedConfig):
         self.feed_forward_proj = feed_forward_proj
         self.tie_encoder_ffns = tie_encoder_ffns
         self.use_conv_in = use_conv_in
+        self.use_sigma_reparam = use_sigma_reparam
+        self.s_reparam_config = s_reparam_config
         self.use_cache = use_cache
 
         act_info = self.feed_forward_proj.split("-")

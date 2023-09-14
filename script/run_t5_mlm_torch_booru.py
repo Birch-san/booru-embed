@@ -71,6 +71,7 @@ from src.random_spans_noise_mask import random_spans_noise_mask
 from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_logger
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
 from src.trainer_callbacks.train_duration_callback import TrainDurationCallback
+from src.trainer_callbacks.sreparam_callback import SReparamCallback
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
 
@@ -626,6 +627,8 @@ def main():
         MemoryUsageCallback(nvml_service=nvml_service),
         TrainDurationCallback(),
     ]
+    if config.use_sigma_reparam:
+        callbacks.insert(0, SReparamCallback())
     if my_training_args.log_flops:
         flops_logger.setLevel(INFO)
     if my_training_args.log_memory:

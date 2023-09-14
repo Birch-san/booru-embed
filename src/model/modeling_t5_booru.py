@@ -23,7 +23,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
 from torch import nn, FloatTensor, LongTensor
-from torch.nn import CrossEntropyLoss, Conv1d, Embedding
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Parameter
 from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
@@ -48,7 +48,8 @@ from transformers.utils import (
 from transformers.utils.import_utils import _is_package_available
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 # from transformers.models.t5.configuration_t5 import T5Config
-from .configuration_t5_booru import T5BooruConfig
+from .configuration_t5_booru import T5BooruConfig, SReparamConfig
+from .sigma_reparam import SReparam
 
 from ..vocab import Vocab
 from ..z_loss import ZLoss
@@ -924,7 +925,8 @@ class T5BooruPreTrainedModel(PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                module.lm_head.weight.data.normal_(mean=0.0, std=factor * 1.0)
+                weight: Parameter = module.lm_head.op.weight if self.config.use_sigma_reparam else module.lm_head.weight
+                weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "qa_outputs"):
                 module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
                 module.qa_outputs.bias.data.zero_()
@@ -1730,6 +1732,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.decoder = T5BooruStack(decoder_config, self.shared)
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
+        if config.use_sigma_reparam:
+            self.lm_head = SReparam(self.lm_head, **config.s_reparam_config)
 
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)

@@ -11,4 +11,5 @@ class BooruBatchData(TypedDict):
     input_ids: ShortTensor
     attention_mask: BoolTensor
     labels: ShortTensor
+    decoder_input_ids: ShortTensor
     decoder_attention_mask: BoolTensor
