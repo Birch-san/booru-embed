@@ -22,9 +22,9 @@ import warnings
 from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
-from torch import nn, FloatTensor, LongTensor, BoolTensor
-from torch.nn import LogSoftmax, NLLLoss, CrossEntropyLoss, Conv1d, Embedding
-from torch.nn.functional import one_hot, scaled_dot_product_attention, pad
+from torch import nn, FloatTensor, LongTensor
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding
+from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
