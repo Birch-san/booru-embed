@@ -51,6 +51,7 @@ from transformers.utils.model_parallel_utils import assert_device_map, get_devic
 from .configuration_t5_booru import T5BooruConfig
 
 from ..vocab import Vocab
+from ..z_loss import ZLoss
 
 
 logger = logging.get_logger(__name__)
@@ -1688,8 +1689,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
 
     cross_entropy_loss_fn: CrossEntropyLoss
-    log_softmax_fn: LogSoftmax
-    nll_loss_fn: NLLLoss
+    z_loss_fn: ZLoss
+
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
@@ -1731,8 +1732,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
 
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
-        self.log_softmax_fn = LogSoftmax(dim=-1)
-        self.nll_loss_fn = NLLLoss(reduction='none', ignore_index=self.config.label_ignore_index)
+        self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1980,27 +1980,14 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         if labels is not None:
             # move labels to correct device to enable PP
             labels: LongTensor = labels.to(lm_logits.device, dtype=torch.long)
-            labels_flat: LongTensor = labels.flatten()
 
-            # TODO: compare with t5x
-            # https://github.com/google-research/t5x/blob/77d2624e65799e3bea15586eb1d3fe7c63477a92/t5x/models.py#L738
-            # https://github.com/google-research/t5x/blob/0728d8429041d6c6e75077334e76eb2370c6057b/t5x/losses.py#L50
-
-            # https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L666
             # z_loss encourages the logits:
             # - to not drift too far from zero (which can cause unacceptable roundoff errors in bfloat16)
             # - to be normalized log-probabilities
             if z_loss is None or z_loss == 0.:
-                loss = self.cross_entropy_loss_fn(lm_logits.flatten(end_dim=-2), labels_flat)
+                loss = self.cross_entropy_loss_fn(lm_logits.flatten(end_dim=-2), labels.flatten())
             else:
-                log_z: FloatTensor = lm_logits.logsumexp(dim=-1)
-                log_softmax: FloatTensor = lm_logits - log_z.unsqueeze(-1)
-                loss: FloatTensor = self.nll_loss_fn(log_softmax.flatten(end_dim=-2), labels_flat)
-                loss = loss.unflatten(0, labels.shape)
-                masked_log_z: FloatTensor = log_z.where(labels != self.config.label_ignore_index, 0)
-                loss += z_loss * masked_log_z ** 2
-                nonignored_token_count: LongTensor = labels.numel() - (labels == self.config.label_ignore_index).sum()
-                loss = loss.sum() / nonignored_token_count
+                loss = self.z_loss_fn(lm_logits, labels, z_loss=z_loss)
 
         if not return_dict:
             output = (lm_logits,) + decoder_outputs[1:] + encoder_outputs
