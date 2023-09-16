@@ -37,6 +37,7 @@ from numpy.typing import NDArray
 from functools import partial
 import torch
 from torch import LongTensor
+from torch.optim import Optimizer
 from itertools import pairwise
 from logging import INFO
 
@@ -60,6 +61,8 @@ from transformers.utils import send_example_telemetry
 from transformers.utils.versions import require_version
 from transformers.utils.import_utils import _is_package_available
 
+from src.create_optimizer import create_optimizer
+from src.optimizer_and_scheduler import OptimizerAndScheduler
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
@@ -481,6 +484,10 @@ def main():
         model.resize_token_embeddings(len(vocab.tokens))
 
     max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
+
+    optimizer: Optimizer = create_optimizer(model, training_args)
+
+    optimizer_and_scheduler = OptimizerAndScheduler(optimizer, None)
     
     device = torch.device('cuda')
 
@@ -642,6 +649,7 @@ def main():
         callbacks=callbacks,
         train_dataset=train_dataset if training_args.do_train else None,
         eval_dataset=eval_dataset if training_args.do_eval else None,
+        optimizers=optimizer_and_scheduler,
         # tokenizer=tokenizer,
         # tokenizer=tokenize_function,
         data_collator=data_collator,
