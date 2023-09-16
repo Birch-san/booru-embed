@@ -51,7 +51,13 @@ def create_optimizer(
         assert isinstance(model, smp.model.DistributedModel)
 
     decay_parameters = get_parameter_names(model, ALL_LAYERNORM_LAYERS)
-    decay_parameters = [name for name in decay_parameters if "bias" not in name]
+    decay_parameters = [
+        name for name in decay_parameters if (
+            'bias' not in name and
+            # SReparam weight should not be decayed. instead, SReparam.gamma should be decayed
+            not name.endswith('.op.weight')
+        )
+    ]
     optimizer_grouped_parameters = [
         {
             "params": [
