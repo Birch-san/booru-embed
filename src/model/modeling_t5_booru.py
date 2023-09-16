@@ -309,6 +309,9 @@ class T5BooruDenseActDense(nn.Module):
         super().__init__()
         self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
+        if config.use_sigma_reparam:
+            self.wi = SReparam(self.wi, **config.s_reparam_config)
+            self.wo = SReparam(self.wo, **config.s_reparam_config)
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
@@ -332,6 +335,11 @@ class T5BooruDenseGatedActDense(nn.Module):
         self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
+        if config.use_sigma_reparam:
+            self.wi_0 = SReparam(self.wi_0, **config.s_reparam_config)
+            self.wi_1 = SReparam(self.wi_1, **config.s_reparam_config)
+            self.wo = SReparam(self.wo, **config.s_reparam_config)
+
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
