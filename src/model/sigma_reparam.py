@@ -1,11 +1,14 @@
 import torch
 import torch.nn as nn
+from torch.nn import Linear, Conv1d, Conv2d
 from torch import Tensor
-from typing import Optional, Callable, TypeAlias, Sequence
+from typing import Optional, TypeAlias, Sequence, Generic, TypeVar
 
-UnaryOperation: TypeAlias = Callable[[Tensor], Tensor]
+# more than these are supported, but these are the ones I care enough to mention in the types
+SReparamSupportedModule: TypeAlias = Linear | Conv1d | Conv2d
+M = TypeVar("M", bound=SReparamSupportedModule)
 
-class SReparam(nn.Module):
+class SReparam(nn.Module, Generic[M]):
     """
     σReparam implementation by Katherine Crowson
     Stabilizing Transformer Training by Preventing Attention Entropy Collapse
@@ -13,7 +16,7 @@ class SReparam(nn.Module):
 
     + type hints added by Alex Birch
     """
-    op: UnaryOperation
+    op: M
     n_iters: int
     n_iters_init: int
     eps: float
@@ -26,7 +29,7 @@ class SReparam(nn.Module):
 
     def __init__(
         self,
-        op: UnaryOperation,
+        op: M,
         bias_shape: Optional[Sequence[int]] = None,
         n_iters=1,
         n_iters_init=15,
@@ -46,7 +49,7 @@ class SReparam(nn.Module):
         n_iters: int = n_iters or self.n_iters
         v: Tensor = self.v
         for _ in range(n_iters):
-            u = self.op(v)
+            u: Tensor = self.op(v)
             u = u / u.norm().clamp_min(self.eps)
             _, v = torch.autograd.functional.vjp(self.op, v, u)
             v = v / v.norm().clamp_min(self.eps)
@@ -74,7 +77,7 @@ class SReparam(nn.Module):
     def forward(self, x: Tensor) -> Tensor:
         if not hasattr(self, "sigma"):
             self.init_(x.shape, x.dtype, x.device)
-        y = self.op(x)
+        y: Tensor = self.op(x)
         y = y * (self.gamma / self.sigma.clone()).to(y.dtype)
         if self.bias is not None:
             y = y + self.bias

@@ -22,8 +22,8 @@ import warnings
 from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
-from torch import nn, FloatTensor, LongTensor
-from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Parameter
+from torch import nn, FloatTensor, LongTensor, Tensor
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Parameter, Linear
 from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
@@ -49,7 +49,7 @@ from transformers.utils.import_utils import _is_package_available
 from transformers.utils.model_parallel_utils import assert_device_map, get_device_map
 # from transformers.models.t5.configuration_t5 import T5Config
 from .configuration_t5_booru import T5BooruConfig, SReparamConfig
-from .sigma_reparam import SReparam
+from .sigma_reparam import SReparam, SReparamSupportedModule
 
 from ..vocab import Vocab
 from ..z_loss import ZLoss
@@ -289,6 +289,9 @@ except Exception:
 
 ALL_LAYERNORM_LAYERS.append(T5BooruLayerNorm)
 
+def unwrap_sreparam(mod: SReparamSupportedModule | SReparam[SReparamSupportedModule]) -> SReparamSupportedModule:
+    return mod.op if isinstance(mod, SReparam) else mod
+
 class KeyValue(NamedTuple):
     key: FloatTensor
     value: FloatTensor
@@ -309,9 +312,10 @@ class T5BooruDenseActDense(nn.Module):
         super().__init__()
         self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
-        if config.use_sigma_reparam:
-            self.wi = SReparam(self.wi, **config.s_reparam_config)
-            self.wo = SReparam(self.wo, **config.s_reparam_config)
+        # commented-out until we solve the mixed-precision problem on T5BooruDenseGatedActDense
+        # if config.use_sigma_reparam:
+        #     self.wi = SReparam(self.wi, **config.s_reparam_config)
+        #     self.wo = SReparam(self.wo, **config.s_reparam_config)
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
@@ -319,7 +323,7 @@ class T5BooruDenseActDense(nn.Module):
         hidden_states = self.wi(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.dropout(hidden_states)
-        wo_weight: FloatTensor = self.wo.op.weight if isinstance(self.wo, SReparam) else self.wo.weight
+        wo_weight: FloatTensor = unwrap_sreparam(self.wo).weight
         if (
             isinstance(self.wo.weight, torch.Tensor)
             and hidden_states.dtype != wo_weight.dtype
@@ -336,10 +340,11 @@ class T5BooruDenseGatedActDense(nn.Module):
         self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
-        if config.use_sigma_reparam:
-            self.wi_0 = SReparam(self.wi_0, **config.s_reparam_config)
-            self.wi_1 = SReparam(self.wi_1, **config.s_reparam_config)
-            self.wo = SReparam(self.wo, **config.s_reparam_config)
+        # commented-out because there's a mixed-precision-related error on the backwards pass
+        # if config.use_sigma_reparam:
+        #     self.wi_0 = SReparam(self.wi_0, **config.s_reparam_config)
+        #     self.wi_1 = SReparam(self.wi_1, **config.s_reparam_config)
+        #     self.wo = SReparam(self.wo, **config.s_reparam_config)
 
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
@@ -353,7 +358,7 @@ class T5BooruDenseGatedActDense(nn.Module):
         # To make 8bit quantization work for google/flan-t5-xxl, self.wo is kept in float32.
         # See https://github.com/huggingface/transformers/issues/20287
         # we also make sure the weights are not in `int8` in case users will force `_keep_in_fp32_modules` to be `None``
-        wo_weight: FloatTensor = self.wo.op.weight if isinstance(self.wo, SReparam) else self.wo.weight
+        wo_weight: FloatTensor = unwrap_sreparam(self.wo).weight
         if (
             isinstance(wo_weight, torch.Tensor)
             and hidden_states.dtype != wo_weight.dtype
@@ -405,6 +410,13 @@ class T5BooruAttention(nn.Module):
         self.k = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.v = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
+
+        # commented-out because there's a mixed-precision-related error on the backwards pass
+        # if config.use_sigma_reparam:
+        #     self.q = SReparam(self.q, **config.s_reparam_config)
+        #     self.k = SReparam(self.k, **config.s_reparam_config)
+        #     self.v = SReparam(self.v, **config.s_reparam_config)
+        #     self.o = SReparam(self.o, **config.s_reparam_config)
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
@@ -950,8 +962,7 @@ class T5BooruPreTrainedModel(PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                weight: Parameter = module.lm_head.op.weight if self.config.use_sigma_reparam else module.lm_head.weight
-                weight.data.normal_(mean=0.0, std=factor * 1.0)
+                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "qa_outputs"):
                 module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
                 module.qa_outputs.bias.data.zero_()
@@ -959,20 +970,20 @@ class T5BooruPreTrainedModel(PreTrainedModel):
             # Mesh TensorFlow FF initialization
             # See https://github.com/tensorflow/mesh/blob/master/mesh_tensorflow/transformer/transformer_layers.py#L56
             # and https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L89
-            module.wi.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+            unwrap_sreparam(module.wi).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
             if hasattr(module.wi, "bias") and module.wi.bias is not None:
                 module.wi.bias.data.zero_()
-            module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
+            unwrap_sreparam(module.wo).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
                 module.wo.bias.data.zero_()
         elif isinstance(module, T5BooruDenseGatedActDense):
-            module.wi_0.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+            unwrap_sreparam(module.wi_0).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
             if hasattr(module.wi_0, "bias") and module.wi_0.bias is not None:
                 module.wi_0.bias.data.zero_()
-            module.wi_1.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
+            unwrap_sreparam(module.wi_1).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
             if hasattr(module.wi_1, "bias") and module.wi_1.bias is not None:
                 module.wi_1.bias.data.zero_()
-            module.wo.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
+            unwrap_sreparam(module.wo).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
             if hasattr(module.wo, "bias") and module.wo.bias is not None:
                 module.wo.bias.data.zero_()
         elif isinstance(module, T5BooruAttention):
@@ -981,10 +992,10 @@ class T5BooruPreTrainedModel(PreTrainedModel):
             d_model = self.config.d_model
             key_value_proj_dim = self.config.d_kv
             n_heads = self.config.num_heads
-            module.q.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            module.k.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            module.v.weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            module.o.weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
+            unwrap_sreparam(module.q).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
+            unwrap_sreparam(module.k).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
+            unwrap_sreparam(module.v).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
+            unwrap_sreparam(module.o).weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
             if module.has_relative_attention_bias:
                 module.relative_attention_bias.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
 
