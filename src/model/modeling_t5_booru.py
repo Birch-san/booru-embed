@@ -772,6 +772,21 @@ class T5BooruBlock(nn.Module):
         elif config.tie_encoder_ffns:
             assert tied_ffn is not None
             self.ffn = tied_ffn
+            # just in case we need a plan B for how to tie FFN,
+            # here's a way that's a bit closer to how other people seem to do it.
+            # i.e. "construct distinct instances, then make their weights reference-equal" (note: you might tie them later, in the _tie_weights callback).
+            # I don't think we need to do this, since we've already made the FFN instances themselves reference-equal.
+            # self.ffn = T5BooruLayerFF(config)
+            # if config.is_gated_act:
+            #     assert isinstance(tied_ffn.DenseReluDense, T5BooruDenseGatedActDense)
+            #     assert isinstance(self.ffn.DenseReluDense, T5BooruDenseGatedActDense)
+            #     self.ffn.DenseReluDense.wi_0.weight = self.ffn.DenseReluDense.wi_0.weight
+            #     self.ffn.DenseReluDense.wi_1.weight = self.ffn.DenseReluDense.wi_1.weight
+            # else:
+            #     assert isinstance(tied_ffn.DenseReluDense, T5BooruDenseActDense)
+            #     assert isinstance(self.ffn.DenseReluDense, T5BooruDenseActDense)
+            #     self.ffn.DenseReluDense.wi.weight = self.ffn.DenseReluDense.wi.weight
+            # self.ffn.DenseReluDense.wo.weight = self.ffn.DenseReluDense.wo.weight
         else:
             self.ffn = T5BooruLayerFF(config)
 
