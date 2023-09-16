@@ -1009,9 +1009,10 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self.is_decoder = config.is_decoder
 
         if config.use_conv_in:
-            self.conv_in = Conv1d(in_channels=config.d_model, out_channels=config.d_model, kernel_size=3, padding=1, bias=False)
+            out_channels = config.d_model
+            self.conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.conv_in = SReparam(self.conv_in, **config.s_reparam_config)
+                self.conv_in = SReparam(self.conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
             # TODO: do we want layernorms before or after the conv? perhaps with SReparam it doesn't matter?
 
         self.block = nn.ModuleList(
