@@ -319,12 +319,13 @@ class T5BooruDenseActDense(nn.Module):
         hidden_states = self.wi(hidden_states)
         hidden_states = self.act(hidden_states)
         hidden_states = self.dropout(hidden_states)
+        wo_weight: FloatTensor = self.wo.op.weight if isinstance(self.wo, SReparam) else self.wo.weight
         if (
             isinstance(self.wo.weight, torch.Tensor)
-            and hidden_states.dtype != self.wo.weight.dtype
-            and self.wo.weight.dtype != torch.int8
+            and hidden_states.dtype != wo_weight.dtype
+            and wo_weight.dtype != torch.int8
         ):
-            hidden_states = hidden_states.to(self.wo.weight.dtype)
+            hidden_states = hidden_states.to(wo_weight.dtype)
         hidden_states = self.wo(hidden_states)
         return hidden_states
 
@@ -352,12 +353,13 @@ class T5BooruDenseGatedActDense(nn.Module):
         # To make 8bit quantization work for google/flan-t5-xxl, self.wo is kept in float32.
         # See https://github.com/huggingface/transformers/issues/20287
         # we also make sure the weights are not in `int8` in case users will force `_keep_in_fp32_modules` to be `None``
+        wo_weight: FloatTensor = self.wo.op.weight if isinstance(self.wo, SReparam) else self.wo.weight
         if (
-            isinstance(self.wo.weight, torch.Tensor)
-            and hidden_states.dtype != self.wo.weight.dtype
-            and self.wo.weight.dtype != torch.int8
+            isinstance(wo_weight, torch.Tensor)
+            and hidden_states.dtype != wo_weight.dtype
+            and wo_weight.dtype != torch.int8
         ):
-            hidden_states = hidden_states.to(self.wo.weight.dtype)
+            hidden_states = hidden_states.to(wo_weight.dtype)
 
         hidden_states = self.wo(hidden_states)
         return hidden_states
