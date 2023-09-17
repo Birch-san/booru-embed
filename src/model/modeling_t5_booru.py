@@ -22,8 +22,8 @@ import warnings
 from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
-from torch import nn, FloatTensor, LongTensor, Tensor
-from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Parameter, Linear
+from torch import nn, FloatTensor, LongTensor, ShortTensor
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding
 from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
@@ -389,6 +389,7 @@ class T5BooruLayerFF(nn.Module):
 class T5BooruAttention(nn.Module):
     use_xformers_attn: bool
     xformers_attention_op: Optional[Callable]
+    log_scale_logits_toward_entropy_of_seq_len: Optional[float]
 
     def __init__(self, config: T5BooruConfig, has_relative_attention_bias=False):
         super().__init__()
@@ -402,6 +403,7 @@ class T5BooruAttention(nn.Module):
         self.n_heads = config.num_heads
         self.dropout = config.dropout_rate
         self.inner_dim = self.n_heads * self.key_value_proj_dim
+        self.log_scale_logits_toward_entropy_of_seq_len = math.log(config.scale_logits_toward_entropy_of_seq_len)
 
         # Mesh TensorFlow initialization to avoid scaling before softmax
         self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -536,6 +538,7 @@ class T5BooruAttention(nn.Module):
         self,
         hidden_states: FloatTensor,
         mask: Optional[FloatTensor] = None,
+        input_lengths: Optional[ShortTensor] = None,
         key_value_states: Optional[FloatTensor] = None,
         position_bias: Optional[FloatTensor] = None,
         past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
@@ -644,6 +647,17 @@ class T5BooruAttention(nn.Module):
         else:
             position_bias_masked = position_bias
 
+        if self.log_scale_logits_toward_entropy_of_seq_len is not None and input_lengths is not None:
+            # Training-free Diffusion Model Adaptation for Variable-Sized Text-to-Image Synthesis
+            # https://arxiv.org/abs/2306.08645
+            # instead of scaling logits by:
+            #   self.scale
+            # we scale by:
+            #   self.scale * log(key_len, standard_key_len)**.5
+            # where standard_key_len is a "preferred" key length (e.g. median key length in the dataset)
+            # this will make the logits more uniform, and thus more entropic, for sequences of different lengths.
+            key_states *= input_lengths.log().div(self.log_scale_logits_toward_entropy_of_seq_len).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
+
         if self.use_xformers_attn:
             attn_weights: FloatTensor = xformers.ops.memory_efficient_attention(
                 query_states,
@@ -703,6 +717,7 @@ class T5BooruLayerSelfAttention(nn.Module):
         self,
         hidden_states: FloatTensor,
         attention_mask: Optional[FloatTensor] = None,
+        input_lengths: Optional[ShortTensor] = None,
         position_bias: Optional[FloatTensor] = None,
         layer_head_mask: Optional[FloatTensor] = None,
         past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
@@ -716,6 +731,7 @@ class T5BooruLayerSelfAttention(nn.Module):
         attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.SelfAttention(
             prenormed_hidden_states,
             mask=attention_mask,
+            input_lengths=input_lengths,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
             past_key_value=past_key_value,
@@ -752,6 +768,7 @@ class T5BooruLayerCrossAttention(nn.Module):
         hidden_states: FloatTensor,
         key_value_states,
         attention_mask: Optional[FloatTensor] = None,
+        input_lengths: Optional[ShortTensor] = None,
         position_bias: Optional[FloatTensor] = None,
         layer_head_mask: Optional[FloatTensor] = None,
         past_key_value: Optional[Tuple[FloatTensor, FloatTensor]] = None,
@@ -766,6 +783,7 @@ class T5BooruLayerCrossAttention(nn.Module):
         attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.EncDecAttention(
             prenormed_hidden_states,
             mask=attention_mask,
+            input_lengths=input_lengths,
             key_value_states=key_value_states,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
@@ -833,9 +851,11 @@ class T5BooruBlock(nn.Module):
         self,
         hidden_states: FloatTensor,
         attention_mask: Optional[FloatTensor] = None,
+        input_lengths: Optional[ShortTensor] = None,
         position_bias=None,
         encoder_hidden_states: Optional[FloatTensor] = None,
         encoder_attention_mask: Optional[FloatTensor] = None,
+        encoder_input_lengths: Optional[ShortTensor] = None,
         encoder_decoder_position_bias: Optional[FloatTensor] = None,
         layer_head_mask: Optional[FloatTensor] = None,
         cross_attn_layer_head_mask: Optional[FloatTensor] = None,
@@ -864,6 +884,7 @@ class T5BooruBlock(nn.Module):
         self_attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.self_attn(
             hidden_states,
             attention_mask=attention_mask,
+            input_lengths=input_lengths,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
             past_key_value=self_attn_past_key_value,
@@ -896,6 +917,7 @@ class T5BooruBlock(nn.Module):
                 hidden_states,
                 key_value_states=encoder_hidden_states,
                 attention_mask=encoder_attention_mask,
+                input_lengths=encoder_input_lengths,
                 position_bias=encoder_decoder_position_bias,
                 layer_head_mask=cross_attn_layer_head_mask,
                 past_key_value=cross_attn_past_key_value,
@@ -1139,9 +1161,11 @@ class T5BooruStack(T5BooruPreTrainedModel):
     def forward(
         self,
         input_ids: Optional[torch.IntTensor]=None,
+        input_lengths: Optional[torch.ShortTensor]=None,
         attention_mask=None,
         encoder_hidden_states=None,
         encoder_attention_mask=None,
+        encoder_input_lengths: Optional[torch.ShortTensor]=None,
         inputs_embeds=None,
         head_mask=None,
         cross_attn_head_mask=None,
@@ -1281,9 +1305,11 @@ class T5BooruStack(T5BooruPreTrainedModel):
                     create_custom_forward(layer_module),
                     hidden_states,
                     extended_attention_mask,
+                    input_lengths,
                     position_bias,
                     encoder_hidden_states,
                     encoder_extended_attention_mask,
+                    encoder_input_lengths,
                     encoder_decoder_position_bias,
                     layer_head_mask,
                     cross_attn_layer_head_mask,
@@ -1294,9 +1320,11 @@ class T5BooruStack(T5BooruPreTrainedModel):
                 layer_outputs = layer_module(
                     hidden_states,
                     attention_mask=extended_attention_mask,
+                    input_lengths=input_lengths,
                     position_bias=position_bias,
                     encoder_hidden_states=encoder_hidden_states,
                     encoder_attention_mask=encoder_extended_attention_mask,
+                    encoder_input_lengths=encoder_input_lengths,
                     encoder_decoder_position_bias=encoder_decoder_position_bias,
                     layer_head_mask=layer_head_mask,
                     cross_attn_layer_head_mask=cross_attn_layer_head_mask,
@@ -1535,6 +1563,8 @@ class T5BooruModel(T5BooruPreTrainedModel):
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
+    wants_input_lengths: bool
+
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -1588,6 +1618,8 @@ class T5BooruModel(T5BooruPreTrainedModel):
             tied_conv_in=self.tied_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
         )
+
+        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1704,11 +1736,15 @@ class T5BooruModel(T5BooruPreTrainedModel):
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
 
+        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
+            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                input_lengths=input_lengths,
                 inputs_embeds=inputs_embeds,
                 head_mask=head_mask,
                 output_attentions=output_attentions,
@@ -1734,15 +1770,20 @@ class T5BooruModel(T5BooruPreTrainedModel):
                 attention_mask = attention_mask.to(self.decoder.first_device)
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
+        
+        if decoder_input_lengths is None and decoder_attention_mask is not None and self.wants_input_lengths:
+            decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
+            input_lengths=decoder_input_lengths,
             inputs_embeds=decoder_inputs_embeds,
             past_key_values=past_key_values,
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
+            encoder_input_lengths=input_lengths,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
@@ -1782,6 +1823,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
+
+    wants_input_lengths: bool
 
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
@@ -1854,6 +1897,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
+
+        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1968,8 +2013,10 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self,
         input_ids: Optional[torch.LongTensor] = None,
         attention_mask: Optional[torch.FloatTensor] = None,
+        input_lengths: Optional[torch.ShortTensor] = None,
         decoder_input_ids: Optional[torch.LongTensor] = None,
         decoder_attention_mask: Optional[torch.BoolTensor] = None,
+        decoder_input_lengths: Optional[torch.ShortTensor] = None,
         head_mask: Optional[torch.FloatTensor] = None,
         decoder_head_mask: Optional[torch.FloatTensor] = None,
         cross_attn_head_mask: Optional[torch.Tensor] = None,
@@ -2026,12 +2073,16 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
+        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
+            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
             # Convert encoder inputs in embeddings if needed
             encoder_outputs = self.encoder(
                 input_ids=input_ids,
                 attention_mask=attention_mask,
+                input_lengths=input_lengths,
                 inputs_embeds=inputs_embeds,
                 head_mask=head_mask,
                 output_attentions=output_attentions,
@@ -2066,14 +2117,19 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
+        if decoder_input_lengths is None and decoder_attention_mask is not None and self.wants_input_lengths:
+            decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+
         # Decode
         decoder_outputs = self.decoder(
             input_ids=decoder_input_ids,
             attention_mask=decoder_attention_mask,
+            input_lengths=decoder_input_lengths,
             inputs_embeds=decoder_inputs_embeds,
             past_key_values=past_key_values,
             encoder_hidden_states=hidden_states,
             encoder_attention_mask=attention_mask,
+            encoder_input_lengths=input_lengths,
             head_mask=decoder_head_mask,
             cross_attn_head_mask=cross_attn_head_mask,
             use_cache=use_cache,
@@ -2200,6 +2256,8 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
+    wants_input_lengths: bool
+
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
@@ -2239,6 +2297,8 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
         )
+
+        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -2325,9 +2385,13 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
+        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
+            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+
         encoder_outputs = self.encoder(
             input_ids=input_ids,
             attention_mask=attention_mask,
+            input_lengths=input_lengths,
             inputs_embeds=inputs_embeds,
             head_mask=head_mask,
             output_attentions=output_attentions,

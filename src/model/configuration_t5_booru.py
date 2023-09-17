@@ -1,6 +1,6 @@
 from transformers.configuration_utils import PretrainedConfig
 from ..ceil_to_multiple import ceil_to_multiple
-from typing import TypedDict
+from typing import TypedDict, Optional
 
 class SReparamConfig(TypedDict):
     n_iters: int
@@ -77,6 +77,7 @@ class T5BooruConfig(PretrainedConfig):
         feed_forward_proj="relu",
         use_conv_in=True,
         is_encoder_decoder=True,
+        scale_logits_toward_entropy_of_seq_len: Optional[int] = 128,
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
         use_sigma_reparam=False,
@@ -118,6 +119,7 @@ class T5BooruConfig(PretrainedConfig):
         self.use_conv_in = use_conv_in
         self.use_sigma_reparam = use_sigma_reparam
         self.s_reparam_config = s_reparam_config
+        self.scale_logits_toward_entropy_of_seq_len = scale_logits_toward_entropy_of_seq_len
         self.use_attn_pre_ln = use_attn_pre_ln
         self.use_attn_post_ln = use_attn_post_ln
         self.use_cache = use_cache
