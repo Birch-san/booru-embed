@@ -14,7 +14,9 @@ class SReparam(nn.Module, Generic[M]):
     Stabilizing Transformer Training by Preventing Attention Entropy Collapse
     https://arxiv.org/abs/2303.06296
 
-    + type hints added by Alex Birch
+    if you are using gradient checkpointing: be sure to enable use_rentrant=True
+
+    + type hints and addcmul fusion added by Alex Birch
     """
     op: M
     n_iters: int
