@@ -78,8 +78,6 @@ class SReparam(nn.Module, Generic[M]):
         if not hasattr(self, "sigma"):
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
-        y = y * (self.gamma / self.sigma.clone()).to(y.dtype)
-        # TODO: addcmul_
-        if self.bias is not None:
-            y = y + self.bias
-        return y
+        if self.bias is None:
+            return y * (self.gamma / self.sigma).to(y.dtype)
+        return torch.addcmul(self.bias.to(y.dtype), y, self.gamma.to(y.dtype), value=(1 / self.sigma).to(y.dtype))
