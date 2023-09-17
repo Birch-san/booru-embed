@@ -1029,27 +1029,22 @@ class T5BooruPreTrainedModel(PreTrainedModel):
 class T5BooruStack(T5BooruPreTrainedModel):
     use_xformers_attn: bool
     embed_tokens: Optional[Embedding]
-    conv_in: Optional[Conv1d]
+    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     needs_reentrant_checkpoint: bool
 
     def __init__(
         self,
         config: T5BooruConfig,
         embed_tokens: Optional[Embedding] = None,
+        tied_conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
         tied_ffn: Optional[T5BooruLayerFF] = None,
     ):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens
+        self.tied_conv_in = tied_conv_in
         self.is_decoder = config.is_decoder
         self.needs_reentrant_checkpoint = config.use_sigma_reparam
-
-        if config.use_conv_in:
-            out_channels = config.d_model
-            self.conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
-            if config.use_sigma_reparam:
-                self.conv_in = SReparam(self.conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
-            # TODO: do we want layernorms before or after the conv? perhaps with SReparam it doesn't matter?
 
         self.block = nn.ModuleList(
             [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0), tied_ffn=tied_ffn) for i in range(config.num_layers)]
@@ -1168,8 +1163,8 @@ class T5BooruStack(T5BooruPreTrainedModel):
             if self.embed_tokens is None:
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds: FloatTensor = self.embed_tokens(input_ids)
-            if self.conv_in is not None:
-                inputs_embeds = self.conv_in(inputs_embeds.transpose(-2, -1)).transpose(-2, -1)
+            if self.tied_conv_in is not None:
+                inputs_embeds = self.tied_conv_in(inputs_embeds.transpose(-2, -1)).transpose(-2, -1)
 
         batch_size, seq_length = input_shape
 
@@ -1517,9 +1512,27 @@ class T5BooruModel(T5BooruPreTrainedModel):
     ]
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
 
+    shared: Embedding
+    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    tied_ffn: Optional[T5BooruLayerFF]
+
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
+
+        if config.use_conv_in:
+            out_channels = config.d_model
+            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            if config.use_sigma_reparam:
+                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+            
+            indirection = 'op.' if config.use_sigma_reparam else ''
+            self._tied_weights_keys.extend([
+                f'decoder.tied_conv_in.{indirection}weight',
+                f'decoder.tied_conv_in.bias'
+                f'encoder.tied_conv_in.{indirection}weight',
+                f'encoder.tied_conv_in.bias'
+            ])
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1528,23 +1541,34 @@ class T5BooruModel(T5BooruPreTrainedModel):
 
         if encoder_config.tie_encoder_ffns:
             for ix in range(encoder_config.num_layers):
+                indirection = 'op.' if config.use_sigma_reparam else ''
                 self._tied_weights_keys.extend([
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
-                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.{indirection}weight',
                 ])
-            tied_ffn = T5BooruLayerFF(encoder_config)
+            self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
-            tied_ffn: Optional[T5BooruLayerFF] = None
+            self.tied_ffn = None
 
-        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
+        self.encoder = T5BooruStack(
+            encoder_config,
+            self.shared,
+            tied_conv_in=self.tied_conv_in,
+            tied_ffn=self.tied_ffn,
+        )
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5BooruStack(decoder_config, self.shared)
+        self.decoder = T5BooruStack(
+            decoder_config,
+            self.shared,
+            tied_conv_in=self.tied_conv_in,
+            # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
+        )
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1733,6 +1757,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     cross_entropy_loss_fn: CrossEntropyLoss
     z_loss_fn: ZLoss
 
+    shared: Embedding
+    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
     # for debug (enables decoding of captions)
@@ -1748,6 +1774,20 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
+        if config.use_conv_in:
+            out_channels = config.d_model
+            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            if config.use_sigma_reparam:
+                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+            
+            indirection = 'op.' if config.use_sigma_reparam else ''
+            self._tied_weights_keys.extend([
+                f'decoder.tied_conv_in.{indirection}weight',
+                f'decoder.tied_conv_in.bias'
+                f'encoder.tied_conv_in.{indirection}weight',
+                f'encoder.tied_conv_in.bias'
+            ])
+
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
         encoder_config.use_cache = False
@@ -1755,23 +1795,34 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         if encoder_config.tie_encoder_ffns:
             for ix in range(encoder_config.num_layers):
+                indirection = 'op.' if config.use_sigma_reparam else ''
                 self._tied_weights_keys.extend([
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
-                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.{indirection}weight',
                 ])
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
 
-        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=self.tied_ffn)
+        self.encoder = T5BooruStack(
+            encoder_config,
+            self.shared,
+            tied_conv_in=self.tied_conv_in,
+            tied_ffn=self.tied_ffn,
+        )
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
-        self.decoder = T5BooruStack(decoder_config, self.shared)
+        self.decoder = T5BooruStack(
+            decoder_config,
+            self.shared,
+            tied_conv_in=self.tied_conv_in,
+            # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
+        )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         if config.use_sigma_reparam:
@@ -1779,6 +1830,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         if config.tie_word_embeddings:
             assert not config.use_sigma_reparam, 'tie_word_embeddings is not supported when lm_head is sigma-reparameterised.'
             self._tied_weights_keys.append('lm_head.weight')
+            # the assumption here is that the actual tying will be done for us by PreTrainedModel#tie_weights.
+            # I haven't tested this, because T5 was like this when I got here (and doesn't typically tie embeddings).
 
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
@@ -2124,9 +2177,25 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 class T5BooruEncoderModel(T5BooruPreTrainedModel):
     _tied_weights_keys = ["encoder.embed_tokens.weight"]
 
+    shared: Embedding
+    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    tied_ffn: Optional[T5BooruLayerFF]
+
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
+
+        if config.use_conv_in:
+            out_channels = config.d_model
+            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            if config.use_sigma_reparam:
+                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+            
+            indirection = 'op.' if config.use_sigma_reparam else ''
+            self._tied_weights_keys.extend([
+                f'encoder.tied_conv_in.{indirection}weight',
+                f'encoder.tied_conv_in.bias'
+            ])
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
@@ -2134,17 +2203,23 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
 
         if encoder_config.tie_encoder_ffns:
             for ix in range(encoder_config.num_layers):
+                indirection = 'op.' if config.use_sigma_reparam else ''
                 self._tied_weights_keys.extend([
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.weight',
-                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
-                    f'encoder.block.{ix}.ffn.layer_norm.weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_0.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wi_1.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.DenseReluDense.wo.{indirection}weight',
+                    f'encoder.block.{ix}.ffn.layer_norm.{indirection}weight',
                 ])
-            tied_ffn = T5BooruLayerFF(encoder_config)
+            self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
-            tied_ffn: Optional[T5BooruLayerFF] = None
+            self.tied_ffn = None
 
-        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
+        self.encoder = T5BooruStack(
+            encoder_config,
+            self.shared,
+            tied_conv_in=self.tied_conv_in,
+            tied_ffn=self.tied_ffn,
+        )
 
         # Initialize weights and apply final processing
         self.post_init()
