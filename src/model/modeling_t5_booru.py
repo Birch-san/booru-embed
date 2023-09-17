@@ -1733,6 +1733,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     cross_entropy_loss_fn: CrossEntropyLoss
     z_loss_fn: ZLoss
 
+    tied_ffn: Optional[T5BooruLayerFF]
+
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
@@ -1759,11 +1761,11 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                     f'encoder.block.{ix}.ffn.DenseReluDense.wo.weight',
                     f'encoder.block.{ix}.ffn.layer_norm.weight',
                 ])
-            tied_ffn = T5BooruLayerFF(encoder_config)
+            self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
-            tied_ffn: Optional[T5BooruLayerFF] = None
+            self.tied_ffn = None
 
-        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=tied_ffn)
+        self.encoder = T5BooruStack(encoder_config, self.shared, tied_ffn=self.tied_ffn)
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
