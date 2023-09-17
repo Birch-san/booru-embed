@@ -63,6 +63,7 @@ from transformers.utils.import_utils import _is_package_available
 
 from src.create_optimizer import create_optimizer
 from src.optimizer_and_scheduler import OptimizerAndScheduler
+from src.get_amp_context import get_amp_context
 from src.vocab import Vocab
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
@@ -635,7 +636,8 @@ def main():
         TrainDurationCallback(),
     ]
     if config.use_sigma_reparam:
-        callbacks.insert(0, SReparamCallback())
+        amp_context = get_amp_context(training_args)
+        callbacks.insert(0, SReparamCallback(amp_context=amp_context))
     if my_training_args.log_flops:
         flops_logger.setLevel(INFO)
     if my_training_args.log_memory:

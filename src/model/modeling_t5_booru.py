@@ -312,10 +312,9 @@ class T5BooruDenseActDense(nn.Module):
         super().__init__()
         self.wi = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
-        # commented-out until we solve the mixed-precision problem on T5BooruDenseGatedActDense
-        # if config.use_sigma_reparam:
-        #     self.wi = SReparam(self.wi, **config.s_reparam_config)
-        #     self.wo = SReparam(self.wo, **config.s_reparam_config)
+        if config.use_sigma_reparam:
+            self.wi = SReparam(self.wi, **config.s_reparam_config)
+            self.wo = SReparam(self.wo, **config.s_reparam_config)
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
 
@@ -340,11 +339,10 @@ class T5BooruDenseGatedActDense(nn.Module):
         self.wi_0 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wi_1 = nn.Linear(config.d_model, config.d_ff, bias=False)
         self.wo = nn.Linear(config.d_ff, config.d_model, bias=False)
-        # commented-out because there's a mixed-precision-related error on the backwards pass
-        # if config.use_sigma_reparam:
-        #     self.wi_0 = SReparam(self.wi_0, **config.s_reparam_config)
-        #     self.wi_1 = SReparam(self.wi_1, **config.s_reparam_config)
-        #     self.wo = SReparam(self.wo, **config.s_reparam_config)
+        if config.use_sigma_reparam:
+            self.wi_0 = SReparam(self.wi_0, **config.s_reparam_config)
+            self.wi_1 = SReparam(self.wi_1, **config.s_reparam_config)
+            self.wo = SReparam(self.wo, **config.s_reparam_config)
 
         self.dropout = nn.Dropout(config.dropout_rate)
         self.act = ACT2FN[config.dense_act_fn]
@@ -412,11 +410,11 @@ class T5BooruAttention(nn.Module):
         self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
 
         # commented-out because there's a mixed-precision-related error on the backwards pass
-        # if config.use_sigma_reparam:
-        #     self.q = SReparam(self.q, **config.s_reparam_config)
-        #     self.k = SReparam(self.k, **config.s_reparam_config)
-        #     self.v = SReparam(self.v, **config.s_reparam_config)
-        #     self.o = SReparam(self.o, **config.s_reparam_config)
+        if config.use_sigma_reparam:
+            self.q = SReparam(self.q, **config.s_reparam_config)
+            self.k = SReparam(self.k, **config.s_reparam_config)
+            self.v = SReparam(self.v, **config.s_reparam_config)
+            self.o = SReparam(self.o, **config.s_reparam_config)
 
         if self.has_relative_attention_bias:
             self.relative_attention_bias = nn.Embedding(self.relative_attention_num_buckets, self.n_heads)
@@ -1032,6 +1030,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
     use_xformers_attn: bool
     embed_tokens: Optional[Embedding]
     conv_in: Optional[Conv1d]
+    needs_reentrant_checkpoint: bool
 
     def __init__(
         self,
@@ -1043,6 +1042,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
 
         self.embed_tokens = embed_tokens
         self.is_decoder = config.is_decoder
+        self.needs_reentrant_checkpoint = config.use_sigma_reparam
 
         if config.use_conv_in:
             out_channels = config.d_model
@@ -1274,7 +1274,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
                     layer_head_mask,
                     cross_attn_layer_head_mask,
                     None,  # past_key_value is always None with gradient checkpointing
-                    use_reentrant=False,
+                    use_reentrant=self.needs_reentrant_checkpoint,
                 )
             else:
                 layer_outputs = layer_module(

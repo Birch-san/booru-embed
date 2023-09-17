@@ -4,14 +4,15 @@ from transformers import TrainerCallback, TrainingArguments, TrainerState, Train
 from ..model.modeling_t5_booru import T5BooruForMaskedLM
 from ..model.sigma_reparam import SReparam
 from ..booru_collator import BooruBatchData
-from typing import Optional
 from contextlib import nullcontext
 from logging import getLogger
+from dataclasses import dataclass, field
 
 logger = getLogger(__name__)
 
+@dataclass
 class SReparamCallback(TrainerCallback):
-  amp_context: Optional[torch.cuda.amp.autocast|nullcontext] = None
+  amp_context: torch.cuda.amp.autocast|nullcontext = field(default_factory=nullcontext)
 
   def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     model: T5BooruForMaskedLM = kwargs['model']
@@ -25,18 +26,10 @@ class SReparamCallback(TrainerCallback):
       decoder_input_ids=ones(*batch_shape, dtype=torch.int16, device=device),
       decoder_attention_mask=ones(*batch_shape, dtype=torch.bool, device=device),
     )
-    SReparam.init_all_(model, **batch)
+    with self.amp_context:
+      SReparam.init_all_(model, **batch)
   
   def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     model: T5BooruForMaskedLM = kwargs['model']
-    if self.amp_context is None:
-      match args.half_precision_backend:
-        case 'auto' | 'cuda':
-          amp_dtype = torch.float16 if args.fp16 else torch.bfloat16
-          self.amp_context = torch.cuda.amp.autocast(cache_enabled=True, dtype=amp_dtype)
-        case _:
-          logger.warning(f'half_precision_backend={args.half_precision_backend} not implemented; disabling amp')
-          self.amp_context = nullcontext()
-
     with self.amp_context:
       SReparam.update_all_(model)

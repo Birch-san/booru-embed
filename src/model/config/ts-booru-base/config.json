@@ -25,7 +25,7 @@
   "tie_encoder_ffns": true,
   "tie_word_embeddings": false,
   "use_conv_in": true,
-  "use_sigma_reparam": false,
+  "use_sigma_reparam": true,
   "vocab_size_nominal": 32169,
   "pad_vocab_to_multiple": 8
 }

@@ -79,6 +79,7 @@ class SReparam(nn.Module, Generic[M]):
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
         y = y * (self.gamma / self.sigma.clone()).to(y.dtype)
+        # TODO: addcmul_
         if self.bias is not None:
             y = y + self.bias
         return y
