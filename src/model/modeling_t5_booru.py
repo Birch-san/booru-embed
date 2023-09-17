@@ -1728,7 +1728,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     _keys_to_ignore_on_load_unexpected = [
         "decoder.block.0.layer.1.EncDecAttention.relative_attention_bias.weight",
     ]
-    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight", "lm_head.weight"]
+    _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
 
     cross_entropy_loss_fn: CrossEntropyLoss
     z_loss_fn: ZLoss
@@ -1776,6 +1776,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
         if config.use_sigma_reparam:
             self.lm_head = SReparam(self.lm_head, **config.s_reparam_config)
+        if config.tie_word_embeddings:
+            assert not config.use_sigma_reparam, 'tie_word_embeddings is not supported when lm_head is sigma-reparameterised.'
+            self._tied_weights_keys.append('lm_head.weight')
 
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
