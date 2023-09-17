@@ -133,6 +133,9 @@ class T5BooruConfig(PretrainedConfig):
         if feed_forward_proj == "gated-gelu":
             self.dense_act_fn = "gelu_new"
 
+        if use_sigma_reparam:
+            assert not tie_word_embeddings, 'tie_word_embeddings is not supported when lm_head is sigma-reparameterised.'
+
         super().__init__(
             pad_token_id=pad_token_id,
             decoder_start_token_id=decoder_start_token_id,
