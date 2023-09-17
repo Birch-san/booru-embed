@@ -608,7 +608,6 @@ class T5BooruAttention(nn.Module):
                     hidden_states = past_key_value
             return hidden_states
 
-        # TODO: can we fuse the qkv projection?
         # get query states
         query_states = shape(self.q(hidden_states))  # (batch_size, n_heads, seq_length, dim_per_head)
 
@@ -691,10 +690,13 @@ class T5BooruAttention(nn.Module):
 
 
 class T5BooruLayerSelfAttention(nn.Module):
+    pre_ln: Optional[T5BooruLayerNorm]
+    post_ln: Optional[T5BooruLayerNorm]
     def __init__(self, config, has_relative_attention_bias=False):
         super().__init__()
         self.SelfAttention = T5BooruAttention(config, has_relative_attention_bias=has_relative_attention_bias)
-        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.pre_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_pre_ln else None
+        self.post_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_post_ln else None
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -707,9 +709,12 @@ class T5BooruLayerSelfAttention(nn.Module):
         use_cache=False,
         output_attentions=False,
     ) -> AttnOutputs | AttnOutputsWithWeights:
-        normed_hidden_states = self.layer_norm(hidden_states)
+        if self.pre_ln is None:
+            prenormed_hidden_states = hidden_states
+        else:
+            prenormed_hidden_states = self.pre_ln(hidden_states)
         attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.SelfAttention(
-            normed_hidden_states,
+            prenormed_hidden_states,
             mask=attention_mask,
             position_bias=position_bias,
             layer_head_mask=layer_head_mask,
@@ -719,20 +724,27 @@ class T5BooruLayerSelfAttention(nn.Module):
         )
         attn_output, *_ = attention_outputs
         layer_output = hidden_states + self.dropout(attn_output)
+        if self.post_ln is None:
+            postnormed_layer_output = layer_output
+        else:
+            postnormed_layer_output = self.post_ln(layer_output)
         match attention_outputs:
             case AttnOutputs(_, kv, position_bias):
-                return AttnOutputs(layer_output, kv, position_bias)
+                return AttnOutputs(postnormed_layer_output, kv, position_bias)
             case AttnOutputsWithWeights(_, kv, position_bias, weights):
-                return AttnOutputsWithWeights(layer_output, kv, position_bias, weights)
+                return AttnOutputsWithWeights(postnormed_layer_output, kv, position_bias, weights)
             case _:
                 raise ValueError(f"Never heard of attention_outputs type '{type(attention_outputs)}'")
 
 
 class T5BooruLayerCrossAttention(nn.Module):
+    pre_ln: Optional[T5BooruLayerNorm]
+    post_ln: Optional[T5BooruLayerNorm]
     def __init__(self, config):
         super().__init__()
         self.EncDecAttention = T5BooruAttention(config, has_relative_attention_bias=False)
-        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.pre_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_pre_ln else None
+        self.post_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_post_ln else None
         self.dropout = nn.Dropout(config.dropout_rate)
 
     def forward(
@@ -747,9 +759,12 @@ class T5BooruLayerCrossAttention(nn.Module):
         query_length=None,
         output_attentions=False,
     ) -> AttnOutputs | AttnOutputsWithWeights:
-        normed_hidden_states = self.layer_norm(hidden_states)
+        if self.pre_ln is None:
+            prenormed_hidden_states = hidden_states
+        else:
+            prenormed_hidden_states = self.pre_ln(hidden_states)
         attention_outputs: AttnOutputs | AttnOutputsWithWeights = self.EncDecAttention(
-            normed_hidden_states,
+            prenormed_hidden_states,
             mask=attention_mask,
             key_value_states=key_value_states,
             position_bias=position_bias,
@@ -761,11 +776,15 @@ class T5BooruLayerCrossAttention(nn.Module):
         )
         attn_output, *_ = attention_outputs
         layer_output = hidden_states + self.dropout(attn_output)
+        if self.post_ln is None:
+            postnormed_layer_output = layer_output
+        else:
+            postnormed_layer_output = self.post_ln(layer_output)
         match attention_outputs:
             case AttnOutputs(_, kv, position_bias):
-                return AttnOutputs(layer_output, kv, position_bias)
+                return AttnOutputs(postnormed_layer_output, kv, position_bias)
             case AttnOutputsWithWeights(_, kv, position_bias, weights):
-                return AttnOutputsWithWeights(layer_output, kv, position_bias, weights)
+                return AttnOutputsWithWeights(postnormed_layer_output, kv, position_bias, weights)
             case _:
                 raise ValueError(f"Never heard of attention_outputs type '{type(attention_outputs)}'")
 

@@ -80,6 +80,8 @@ class T5BooruConfig(PretrainedConfig):
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
         use_sigma_reparam=False,
+        use_attn_pre_ln=False,
+        use_attn_post_ln=True,
         use_cache=True,
         pad_vocab_to_multiple=8,
         pad_token_id=0,
@@ -116,6 +118,8 @@ class T5BooruConfig(PretrainedConfig):
         self.use_conv_in = use_conv_in
         self.use_sigma_reparam = use_sigma_reparam
         self.s_reparam_config = s_reparam_config
+        self.use_attn_pre_ln = use_attn_pre_ln
+        self.use_attn_post_ln = use_attn_post_ln
         self.use_cache = use_cache
 
         act_info = self.feed_forward_proj.split("-")
