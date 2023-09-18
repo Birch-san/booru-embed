@@ -23,7 +23,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
-from torch.nn import CrossEntropyLoss, Conv1d, Embedding
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear
 from torch.nn.functional import scaled_dot_product_attention
 from torch.utils.checkpoint import checkpoint
 
@@ -1559,6 +1559,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
     ]
     _tied_weights_keys = ["encoder.embed_tokens.weight", "decoder.embed_tokens.weight"]
 
+    lm_head: Linear|SReparam[Linear]
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
@@ -1818,6 +1819,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     z_loss_fn: ZLoss
 
     shared: Embedding
+    lm_head: Linear|SReparam[Linear]
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
@@ -2252,6 +2254,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 class T5BooruEncoderModel(T5BooruPreTrainedModel):
     _tied_weights_keys = ["encoder.embed_tokens.weight"]
 
+    lm_head: Linear|SReparam[Linear]
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
