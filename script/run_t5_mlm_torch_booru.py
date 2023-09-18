@@ -37,7 +37,8 @@ from numpy.typing import NDArray
 from functools import partial
 import torch
 from torch import LongTensor
-from torch.optim import Optimizer
+from torch.optim import Optimizer, SGD
+from torchlars import LARS
 from itertools import pairwise
 from logging import INFO
 
@@ -271,6 +272,7 @@ class SysArguments:
 
 @dataclass
 class MyTrainingArguments:
+    use_lars: bool = field(default=False, metadata={"help": "free yourself from Adam's shackles and use glorious LARS(SGD) optimizer"})
     log_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     log_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
     log_every_n_steps: int = field(default=50, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
@@ -486,7 +488,19 @@ def main():
 
     max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
 
-    optimizer: Optimizer = create_optimizer(model, training_args)
+    if my_training_args.use_lars:
+        # lololol
+        optimizer = LARS(
+            SGD(
+                model.parameters(),
+                lr=training_args.learning_rate,
+                momentum=0.9,
+                weight_decay=training_args.weight_decay,
+            )
+        )
+        # TODO: everything
+    else:
+        optimizer: Optimizer = create_optimizer(model, training_args)
 
     optimizer_and_scheduler = OptimizerAndScheduler(optimizer, None)
     
