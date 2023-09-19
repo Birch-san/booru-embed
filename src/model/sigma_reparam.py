@@ -22,7 +22,9 @@ class SReparam(nn.Module, Generic[M]):
     n_iters: int
     n_iters_init: int
     eps: float
-    gamma: nn.Parameter
+    # gamma, but we can't call it gamma because (sigh):
+    # https://github.com/huggingface/transformers/blob/8e3980a290acc6d2f8ea76dba111b9ef0ef00309/src/transformers/modeling_utils.py#L3355
+    g: nn.Parameter
     bias: Optional[nn.Parameter]
 
     # type hints for buffers registered during init_()
@@ -43,7 +45,7 @@ class SReparam(nn.Module, Generic[M]):
         self.n_iters = n_iters
         self.n_iters_init = max(n_iters, n_iters_init)
         self.eps = eps
-        self.gamma = nn.Parameter(torch.ones(()), requires_grad=learn_gamma)
+        self.g = nn.Parameter(torch.ones(()), requires_grad=learn_gamma)
         self.bias = nn.Parameter(torch.zeros(bias_shape)) if bias_shape is not None else None
 
     @torch.no_grad()
@@ -69,7 +71,7 @@ class SReparam(nn.Module, Generic[M]):
     @torch.no_grad()
     def init_(self, shape: Sequence[int], dtype: torch.dtype, device: torch.device|str) -> None:
         self.register_buffer("v", torch.randn(shape, dtype=dtype, device=device))
-        self.register_buffer("sigma", torch.ones((), dtype=self.gamma.dtype, device=device))
+        self.register_buffer("sigma", torch.ones((), dtype=self.g.dtype, device=device))
         self.update_(self.n_iters_init)
 
     @classmethod
@@ -81,5 +83,5 @@ class SReparam(nn.Module, Generic[M]):
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
         if self.bias is None:
-            return y * (self.gamma / self.sigma).to(y.dtype)
-        return torch.addcmul(self.bias.to(y.dtype), y, self.gamma.to(y.dtype), value=(1 / self.sigma).to(y.dtype))
+            return y * (self.g / self.sigma).to(y.dtype)
+        return torch.addcmul(self.bias.to(y.dtype), y, self.g.to(y.dtype), value=(1 / self.sigma).to(y.dtype))
