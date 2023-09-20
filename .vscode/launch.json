@@ -216,8 +216,11 @@
       "module": "script.test_checkpoint",
       "justMyCode": false,
       "args": [
-        "--model_name_or_path", "./out-batch_128_sreparam_all_lars_1e-1/checkpoint-3000",
+        "--output_dir", "./out-t5-mlm-torch-booru",
+        "--model_name_or_path", "./out-sreparam-fix/checkpoint-1000",
         "--xformers",
+        "--pad_to_multiple", "8",
+        "--per_device_eval_batch_size", "8",
       ]
     },
     {
