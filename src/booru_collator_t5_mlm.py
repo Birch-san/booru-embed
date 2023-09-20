@@ -47,6 +47,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
     pad_to_max: bool = False
     max_length: Optional[int] = None
     endless_none: Iterable[None] = field(default_factory=lambda: repeat(None))
+    include_unmasked: bool = False
 
     def __post_init__(self):
         assert self.pad_token_id == 0, 'we currently employ in filter_input_ids a condition which ignores both -1 tokens and pad tokens via the criteria `<= 0` (on the basis it may be cheaper than `!= -1 & != self.pad_token_id`). to use a non-zero pad_token_id: we would need to remove this optimization.'
@@ -104,6 +105,8 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             decoder_input_ids=decoder_input_ids.detach().cpu(),
             decoder_attention_mask=decoder_attention_mask.detach().cpu(),
         )
+        if self.include_unmasked:
+            data['unmasked'] = input_ids_t.detach().cpu()
         batch_encoding = BatchEncoding(
             data=data,
         )
