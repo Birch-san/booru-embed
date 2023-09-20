@@ -1842,7 +1842,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             out_channels = config.d_model
             self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
             
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([

@@ -7,6 +7,7 @@ class SReparamConfig(TypedDict):
     n_iters_init: int
     eps: float
     learn_gamma: bool
+    register_v_during_construction: bool
 
 class T5BooruConfig(PretrainedConfig):
     r"""
@@ -55,6 +56,7 @@ class T5BooruConfig(PretrainedConfig):
     model_type = "t5"
     keys_to_ignore_at_inference = ["past_key_values"]
     attribute_map = {"hidden_size": "d_model", "num_attention_heads": "num_heads", "num_hidden_layers": "num_layers"}
+    s_reparam_config: SReparamConfig
 
     def __init__(
         self,
@@ -92,6 +94,7 @@ class T5BooruConfig(PretrainedConfig):
             n_iters_init=15,
             eps=1e-12,
             learn_gamma=True,
+            register_v_during_construction=True,
         ),
         **kwargs,
     ):

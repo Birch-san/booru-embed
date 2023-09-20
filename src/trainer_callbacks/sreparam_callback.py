@@ -16,20 +16,38 @@ class SReparamCallback(TrainerCallback):
 
   def on_train_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     model: T5BooruForMaskedLM = kwargs['model']
-    # batch_shape = [args.per_device_train_batch_size, model.config.max_ctx_len]
-    batch_shape = [1, 8]
-    device=model.device
-    batch = BooruBatchData(
-      input_ids=ones(*batch_shape, dtype=torch.int16, device=device),
-      attention_mask=ones(*batch_shape, dtype=torch.bool, device=device),
-      labels=ones(*batch_shape, dtype=torch.int16, device=device),
-      decoder_input_ids=ones(*batch_shape, dtype=torch.int16, device=device),
-      decoder_attention_mask=ones(*batch_shape, dtype=torch.bool, device=device),
-    )
-    with self.amp_context:
-      SReparam.init_all_(model, **batch)
+    if model.config.s_reparam_config['register_v_during_construction']:
+      with self.amp_context:
+        SReparam.init_all_statically(model)
+    else:
+      # batch_shape = [args.per_device_train_batch_size, model.config.max_ctx_len]
+      batch_shape = [1, 8]
+      device=model.device
+      batch = BooruBatchData(
+        input_ids=ones(*batch_shape, dtype=torch.int16, device=device),
+        attention_mask=ones(*batch_shape, dtype=torch.bool, device=device),
+        labels=ones(*batch_shape, dtype=torch.int16, device=device),
+        decoder_input_ids=ones(*batch_shape, dtype=torch.int16, device=device),
+        decoder_attention_mask=ones(*batch_shape, dtype=torch.bool, device=device),
+      )
+      with self.amp_context:
+        SReparam.init_all_via_trace(model, **batch)
   
   def on_step_end(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     model: T5BooruForMaskedLM = kwargs['model']
     with self.amp_context:
       SReparam.update_all_(model)
+  
+  # debugging; don't commit
+  def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+    if args.report_to and 'wandb' in args.report_to:
+      model: T5BooruForMaskedLM = kwargs['model']
+      import wandb
+      wandb.log({
+        'sreparam/lm_head_sigma': model.lm_head.sigma.item(),
+        'sreparam/lm_head_weight_mean': model.lm_head.op.weight.mean().item(),
+        'sreparam/lm_head_weight_max': model.lm_head.op.weight.max().item(),
+        'sreparam/lm_head_weight_min': model.lm_head.op.weight.min().item(),
+        'sreparam/lm_head_weight_var': model.lm_head.op.weight.var().item(),
+      }, step=state.global_step, commit=False)
+      print(model.lm_head.op.weight)
