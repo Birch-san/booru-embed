@@ -29,7 +29,6 @@ from os.path import dirname, realpath, join
 from pathlib import Path
 import re
 import sys
-import warnings
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Literal
 import numpy as np
@@ -145,12 +144,6 @@ class ModelArguments:
                 "The token to use as HTTP bearer authorization for remote files. If not specified, will use the token "
                 "generated when running `huggingface-cli login` (stored in `~/.huggingface`)."
             )
-        },
-    )
-    use_auth_token: bool = field(
-        default=None,
-        metadata={
-            "help": "The `use_auth_token` argument is deprecated and will be removed in v4.34. Please use `token`."
         },
     )
     trust_remote_code: bool = field(
@@ -292,16 +285,9 @@ def main():
         model_args, data_args, training_args, my_training_args, sys_args = parser.parse_args_into_dataclasses()
     
     if data_args.collator_device == 'cuda':
-        # I think this may only be necessary because by default we are using pinning.
-        # TODO: look up what pinning is and decide whether we want it
+        # I think this may only be necessary because by default we are using pinning. but pinning sounds like a good thing.
         logger.info("Setting torch.multiprocessing start_method to 'spawn', because data collators will be using CUDA.")
         torch.multiprocessing.set_start_method('spawn')
-
-    if model_args.use_auth_token is not None:
-        warnings.warn("The `use_auth_token` argument is deprecated and will be removed in v4.34.", FutureWarning)
-        if model_args.token is not None:
-            raise ValueError("`token` and `use_auth_token` are both specified. Please set only the argument `token`.")
-        model_args.token = model_args.use_auth_token
 
     # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
     # information sent is the one passed as arguments along with your Python/PyTorch versions.
@@ -471,9 +457,8 @@ def main():
         assert _xformers_available, 'You requested xformers, but the xformers package does not appear to be installed.'
         assert torch.cuda.is_available(), "You requested xformers, but CUDA is not available (you would not be able to use xformers' accelerated CUDA kernels)."
         model.enable_xformers_memory_efficient_attention()
-    else:
-        if _xformers_available and torch.cuda.is_available():
-            logger.warning('xformers is available, but you are not using it.')
+    elif _xformers_available and torch.cuda.is_available():
+        logger.warning('xformers is available, but you are not using it.')
     
     if training_args.gradient_checkpointing:
         model.gradient_checkpointing_enable()
