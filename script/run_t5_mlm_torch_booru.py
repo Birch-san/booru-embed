@@ -272,7 +272,8 @@ class SysArguments:
 
 @dataclass
 class MyTrainingArguments:
-    use_lars: bool = field(default=False, metadata={"help": "free yourself from Adam's shackles and use glorious LARS(SGD) optimizer"})
+    use_lars: bool = field(default=False, metadata={"help": "wrap optimizer in LARS"})
+    sgd_momentum: float = field(default=0, metadata={"help": "momentum for SGD optimizer, if used"})
     log_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     log_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
     log_every_n_steps: int = field(default=50, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
@@ -488,19 +489,25 @@ def main():
 
     max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
 
-    if my_training_args.use_lars:
+    if training_args.optim == 'sgd':
         # lololol
-        optimizer = LARS(
-            SGD(
-                model.parameters(),
-                lr=training_args.learning_rate,
-                momentum=0.9,
-                weight_decay=training_args.weight_decay,
-            )
+        optimizer = SGD(
+            model.parameters(),
+            lr=training_args.learning_rate,
+            momentum=my_training_args.sgd_momentum,
+            weight_decay=training_args.weight_decay,
         )
-        # TODO: everything
+        # TODO:
+        #   work out how to decay by param group
+        #   use Apple's lr schedule
+        #   check again how Adam behaves with a higher LR
+        #   evaluate task performance
+        #   try running out-batch_128_sreparam_all_lars_1e-1
     else:
         optimizer: Optimizer = create_optimizer(model, training_args)
+    
+    if my_training_args.use_lars:
+        optimizer = LARS(optimizer)
 
     optimizer_and_scheduler = OptimizerAndScheduler(optimizer, None)
     
