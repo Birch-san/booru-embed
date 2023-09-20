@@ -8,7 +8,8 @@ from logging import getLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.import_utils import _is_package_available
 from transformers.utils.versions import require_version
-from transformers import HfArgumentParser, TrainingArguments, set_seed
+from transformers import HfArgumentParser, TrainingArguments, GenerationConfig, set_seed
+from transformers.generation.streamers import BaseStreamer
 import sys
 import os
 from os import listdir
@@ -386,6 +387,33 @@ def main():
     )
     
     model.to(device)
+
+    @dataclass
+    class Streamer(BaseStreamer):
+        vocab: Vocab
+        batch_size: int = field(repr=False)
+        acc_tok: LongTensor = field(init=False)
+        decoded: List[List[str]] = field(init=False)
+        def __post_init__(self):
+            self.decoded = [[] for _ in range(self.batch_size)]
+            self.acc_tok = torch.empty((self.batch_size, 0), dtype=torch.long)
+
+        def put(self, value: LongTensor) -> None:
+            """Function that is called by `.generate()` to push new tokens"""
+            assert value.ndim == 1 or value.ndim == 2
+            for acc, tok in zip(self.decoded, value[:,0] if value.ndim == 2 else value):
+                acc.append(self.vocab.tokens[tok])
+            self.acc_tok = torch.cat([
+                self.acc_tok,
+                value.unsqueeze(-1) if value.ndim == 1 else value,
+            ], dim=-1)
+            pass
+
+        def end(self):
+            """Function that is called by `.generate()` to signal the end of generation"""
+            raise NotImplementedError()
+    streamer=Streamer(vocab=vocab, batch_size=training_args.per_device_eval_batch_size)
+
     data_loader = DataLoader(
         tokenized_datasets['validation'],
         batch_size=training_args.per_device_eval_batch_size,
@@ -407,6 +435,16 @@ def main():
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['decoder_input_ids']]
         # print('\n'.join(''.join('1' if tok else '0' for tok in mask) for mask in batch['decoder_attention_mask'].byte()))
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['unmasked']]
+        out = model.generate(
+            generation_config=GenerationConfig(
+                max_new_tokens=20,
+            ),
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            streamer=streamer,
+        )
+        # out.acc_tok
+        # out.decoded
         pass
     pass
 
