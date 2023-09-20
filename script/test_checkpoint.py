@@ -1,5 +1,5 @@
 import torch
-from torch import LongTensor
+from torch import LongTensor, inference_mode
 from torch.utils.data import DataLoader
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Literal, Iterable
@@ -411,12 +411,14 @@ def main():
 
         def end(self):
             """Function that is called by `.generate()` to signal the end of generation"""
-            raise NotImplementedError()
-    streamer=Streamer(vocab=vocab, batch_size=training_args.per_device_eval_batch_size)
+            # raise NotImplementedError()
+            pass
+    batch_size=training_args.per_device_eval_batch_size
+    streamer=Streamer(vocab=vocab, batch_size=batch_size)
 
     data_loader = DataLoader(
         tokenized_datasets['validation'],
-        batch_size=training_args.per_device_eval_batch_size,
+        batch_size=batch_size,
         shuffle=True,
         num_workers=data_args.preprocessing_num_workers or 0,
         collate_fn=data_collator,
@@ -435,9 +437,10 @@ def main():
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['decoder_input_ids']]
         # print('\n'.join(''.join('1' if tok else '0' for tok in mask) for mask in batch['decoder_attention_mask'].byte()))
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['unmasked']]
+        max_new_tokens = 20
         out = model.generate(
             generation_config=GenerationConfig(
-                max_new_tokens=20,
+                max_new_tokens=max_new_tokens,
             ),
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -445,6 +448,69 @@ def main():
         )
         # out.acc_tok
         # out.decoded
+
+        ####
+        #### and now we try to do the same greedy search as generate, manually (no currently working):
+        ####
+        model_kwargs = {
+            'input_ids': input_ids,
+            'attention_mask': attention_mask,
+        }
+        inputs_tensor, model_input_name, model_kwargs = model._prepare_model_inputs(
+            inputs=None, bos_token_id=None, model_kwargs=model_kwargs,
+        )
+        model_kwargs['use_cache']=True
+
+        # encoder_outputs is not in model_kwargs, so we do this:
+        model_kwargs = model._prepare_encoder_decoder_kwargs_for_generation(
+            inputs_tensor, model_kwargs, model_input_name
+        )
+
+        unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
+        acc_tok: LongTensor = torch.empty((batch_size, 0), dtype=torch.long, device=input_ids.device)
+        eos_token_id_tensor: LongTensor = torch.tensor([vocab.token_to_ix[SpecialToken.EOS.value]], device=input_ids.device)
+
+        for _ in range(max_new_tokens):
+            model_inputs = model.prepare_inputs_for_generation(input_ids, **model_kwargs)
+
+            with inference_mode():
+                outputs = model.forward(
+                    **model_inputs,
+                    return_dict=True,
+                    output_attentions=False,
+                    output_hidden_states=False,
+                )
+            logits = outputs.logits
+            past_key_values = outputs.past_key_values
+            encoder_last_hidden_state = outputs.encoder_last_hidden_state
+
+            next_token_logits = outputs.logits[:, -1, :]
+
+            next_tokens = torch.argmax(next_token_logits, dim=-1)
+            # finished sentences should have their next token be a padding token
+            next_tokens = next_tokens * unfinished_sequences + vocab.token_to_ix[SpecialToken.Pad.value] * (1 - unfinished_sequences)
+
+            # update generated ids, model inputs, and length for next step
+            input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
+
+            acc_tok = torch.cat([
+                acc_tok,
+                next_tokens.unsqueeze(-1),
+            ], dim=-1)
+
+            model_kwargs = model._update_model_kwargs_for_generation(
+                outputs, model_kwargs, is_encoder_decoder=True
+            )
+
+            if eos_token_id_tensor is not None:
+                unfinished_sequences = unfinished_sequences.mul(
+                    next_tokens.tile(eos_token_id_tensor.shape[0], 1).ne(eos_token_id_tensor.unsqueeze(1)).prod(dim=0)
+                )
+
+                # stop when each sentence is finished
+                if unfinished_sequences.max() == 0:
+                    break
+        # [[vocab.tokens[token_ix] for token_ix in caption] for caption in acc_tok]
         pass
     pass
 
