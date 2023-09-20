@@ -155,7 +155,8 @@
       "args": [
         "--config_name", "./src/model/config/t5-booru-small",
         "--tokenizer_name", "google/t5-v1_1-small",
-        "--per_device_train_batch_size", "256",
+        "--per_device_train_batch_size", "128",
+        // "--per_device_train_batch_size", "8",
         "--per_device_eval_batch_size", "4",
         "--do_train",
         "--output_dir", "./out-t5-mlm-torch-booru",
@@ -164,18 +165,39 @@
         "--gradient_checkpointing",
         // "--log_flops",
         // "--log_memory",
+        // "--report_to", "none",
         "--report_to", "wandb",
-        "--optim", "adamw_8bit",
+        // "--optim", "adamw_8bit",
+        "--optim", "sgd",
+        "--use_lars",
+        "--sgd_momentum", "0.9",
         "--log_every_n_steps", "5",
         "--collator_device", "cpu",
         "--pad_to_multiple", "8",
+        "--num_train_epochs", "1", // just doing this for now to speed up lr schedule
+        // self.args.warmup_steps
+        // self.args.warmup_ratio
+        // num_examples=5_626_898
+        // len_dataloader=703_363 (it's num_examples // batch_size:=8)
+        // num_update_steps_per_epoch=703_363 (it's len_dataloader)
+        // TODO: max length OOMs at 192, but 128 is fine
+        // "--pad_to_max_length",
+        // "--replay_collator",
+        // TODO: --pad_to_max_seq_len, for better torch compile
+        // TODO: full torch compile?
+        // TODO: measure speed with no-op model and no-op dataloader
         // "--torch_compile",
         // "--torch_compile_mode", "reduce-overhead", // https://pytorch.org/docs/stable/generated/torch.compile.html
-        // "--run_name", "batch_256_workers_1_cpu",
+        // "--torch_compile_plan_b",
+        // "--run_name", "batch_128_workers_1_cpu_maxlen_compile_fix",
+        // "learning_rate", ".00005", // 5e-5 == .00005 // default
+        "--learning_rate", "1e-1", // 1e-4 == .0001
+        "--run_name", "batch_128_sreparam_static_lars_1e-1",
         // "--dataloader_num_workers", "1"
       ],
       "env": {
         "ACCELERATE_MIXED_PRECISION": "bf16",
+        // "CUDA_LAUNCH_BLOCKING": "1",
       }
       // note: fastest seemed to be non-xformers, with single-precision. yikes.
       // batch 128 possible with xformers + mixed. 23371MiB / 24564MiB, reached iteration 255 and beyond
@@ -186,6 +208,17 @@
       // still got some loss masking to do
       // batch 128 mixed bf16 without xformers OOMed on iteration 49. depends on random luck I think.
       // gradient checkpointing reduces memory to 11403MiB, still batch size 128 xformers mixed, still >3it/s
+    },
+    {
+      "name": "Python: Test checkpoint",
+      "type": "python",
+      "request": "launch",
+      "module": "script.test_checkpoint",
+      "justMyCode": false,
+      "args": [
+        "--model_name_or_path", "./out-batch_128_sreparam_all_lars_1e-1/checkpoint-3000",
+        "--xformers",
+      ]
     },
     {
       "name": "Python: Loss benchmark",
