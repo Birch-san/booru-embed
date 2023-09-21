@@ -437,20 +437,23 @@ def main():
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['decoder_input_ids']]
         # print('\n'.join(''.join('1' if tok else '0' for tok in mask) for mask in batch['decoder_attention_mask'].byte()))
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['unmasked']]
+
         max_new_tokens = 20
         out = model.generate(
             generation_config=GenerationConfig(
                 max_new_tokens=max_new_tokens,
+                decoder_start_token_id=config.decoder_start_token_id,
+                eos_token_id=config.eos_token_id,
             ),
             input_ids=input_ids,
             attention_mask=attention_mask,
             streamer=streamer,
         )
-        # out.acc_tok
-        # out.decoded
+        # streamer.acc_tok
+        # streamer.decoded
 
         ####
-        #### and now we try to do the same greedy search as generate, manually (no currently working):
+        #### and now we try to do the same greedy search as generate, manually (same result):
         ####
         model_kwargs = {
             'input_ids': input_ids,
@@ -459,6 +462,8 @@ def main():
         inputs_tensor, model_input_name, model_kwargs = model._prepare_model_inputs(
             inputs=None, bos_token_id=None, model_kwargs=model_kwargs,
         )
+        model_kwargs['output_attentions'] = False
+        model_kwargs['output_hidden_states'] = False
         model_kwargs['use_cache']=True
 
         # encoder_outputs is not in model_kwargs, so we do this:
@@ -466,8 +471,17 @@ def main():
             inputs_tensor, model_kwargs, model_input_name
         )
 
+        input_ids, model_kwargs = model._prepare_decoder_input_ids_for_generation(
+            batch_size=batch_size,
+            model_input_name=model_input_name,
+            model_kwargs=model_kwargs,
+            decoder_start_token_id=config.decoder_start_token_id,
+            bos_token_id=None,
+            device=inputs_tensor.device,
+        )
+
         unfinished_sequences = torch.ones(input_ids.shape[0], dtype=torch.long, device=input_ids.device)
-        acc_tok: LongTensor = torch.empty((batch_size, 0), dtype=torch.long, device=input_ids.device)
+        acc_tok: LongTensor = input_ids.clone()
         eos_token_id_tensor: LongTensor = torch.tensor([vocab.token_to_ix[SpecialToken.EOS.value]], device=input_ids.device)
 
         for _ in range(max_new_tokens):
