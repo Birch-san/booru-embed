@@ -444,6 +444,7 @@ def main():
                 max_new_tokens=max_new_tokens,
                 decoder_start_token_id=config.decoder_start_token_id,
                 eos_token_id=config.eos_token_id,
+                pad_token_id=config.pad_token_id,
             ),
             input_ids=input_ids,
             attention_mask=attention_mask,
@@ -502,7 +503,7 @@ def main():
 
             next_tokens = torch.argmax(next_token_logits, dim=-1)
             # finished sentences should have their next token be a padding token
-            next_tokens = next_tokens * unfinished_sequences + vocab.token_to_ix[SpecialToken.Pad.value] * (1 - unfinished_sequences)
+            next_tokens = next_tokens * unfinished_sequences + config.pad_token_id * (1 - unfinished_sequences)
 
             # update generated ids, model inputs, and length for next step
             input_ids = torch.cat([input_ids, next_tokens[:, None]], dim=-1)
