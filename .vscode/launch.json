@@ -218,8 +218,8 @@
       "args": [
         "--output_dir", "./out-t5-mlm-torch-booru",
         "--model_name_or_path", "./out-sreparam-fix/checkpoint-1000",
-        "--xformers",
-        "--pad_to_multiple", "8",
+        // "--xformers",
+        // "--pad_to_multiple", "8",
         "--per_device_eval_batch_size", "8",
       ]
     },
