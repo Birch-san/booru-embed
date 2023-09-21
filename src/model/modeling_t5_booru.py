@@ -1737,8 +1737,11 @@ class T5BooruModel(T5BooruPreTrainedModel):
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
 
-        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
-            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if input_lengths is None and self.wants_input_lengths:
+            if attention_mask is None:
+                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+            else:
+                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -1772,8 +1775,11 @@ class T5BooruModel(T5BooruPreTrainedModel):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
         
-        if decoder_input_lengths is None and decoder_attention_mask is not None and self.wants_input_lengths:
-            decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if decoder_input_lengths is None and self.wants_input_lengths:
+            if decoder_attention_mask is None:
+                decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
+            else:
+                decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         # Decode
         decoder_outputs = self.decoder(
@@ -2075,8 +2081,11 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
-        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
-            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if input_lengths is None and self.wants_input_lengths:
+            if attention_mask is None:
+                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+            else:
+                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -2119,8 +2128,11 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
-        if decoder_input_lengths is None and decoder_attention_mask is not None and self.wants_input_lengths:
-            decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if decoder_input_lengths is None and self.wants_input_lengths:
+            if decoder_attention_mask is None:
+                decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
+            else:
+                decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         # Decode
         decoder_outputs = self.decoder(
@@ -2388,8 +2400,11 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if input_lengths is None and attention_mask is not None and self.wants_input_lengths:
-            input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if input_lengths is None and self.wants_input_lengths:
+            if attention_mask is None:
+                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+            else:
+                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
 
         encoder_outputs = self.encoder(
             input_ids=input_ids,
