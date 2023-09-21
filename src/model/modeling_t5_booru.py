@@ -24,7 +24,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
 from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear
-from torch.nn.functional import scaled_dot_product_attention
+from torch.nn.functional import scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -53,6 +53,7 @@ from .sigma_reparam import SReparam, SReparamSupportedModule
 
 from ..vocab import Vocab
 from ..z_loss import ZLoss
+from ..ceil_to_multiple import remaining_to_multiple, ceil_to_multiple
 
 
 logger = logging.get_logger(__name__)
@@ -533,6 +534,9 @@ class T5BooruAttention(nn.Module):
                 )
                 self.use_xformers_attn = True
                 self.xformers_attention_op = attention_op
+        else:
+            self.use_xformers_attn = False
+            self.xformers_attention_op = None
 
     def forward(
         self,
@@ -1155,8 +1159,11 @@ class T5BooruStack(T5BooruPreTrainedModel):
     def set_use_memory_efficient_attention_xformers(
         self, use_memory_efficient_attention_xformers: bool, attention_op: Optional[Callable] = None
     ) -> None:
-        if use_memory_efficient_attention_xformers and _xformers_available:
+        if use_memory_efficient_attention_xformers:
+            assert _xformers_available, "Memory efficient attention requires xformers to be installed. Run `pip install xformers`."
             self.use_xformers_attn = True
+        else:
+            self.use_xformers_attn = False
 
     def forward(
         self,
@@ -1833,6 +1840,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     vocab: Optional[Vocab] = None
 
     wants_input_lengths: bool
+    use_memory_efficient_attention_xformers: bool
 
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
@@ -1907,6 +1915,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
 
         self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
+        self.use_memory_efficient_attention_xformers = False
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1918,6 +1927,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     def set_use_memory_efficient_attention_xformers(
         self, valid: bool, attention_op: Optional[Callable] = None
     ) -> None:
+        self.use_memory_efficient_attention_xformers = valid
+
         # Recursively walk through all the children.
         # Any children which exposes the set_use_memory_efficient_attention_xformers method
         # gets the message
@@ -2212,6 +2223,15 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         # cut decoder_input_ids if past is used
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
+        
+        # if self.use_memory_efficient_attention_xformers:
+        #     pad_to_multiple = 8
+        #     if input_ids.shape[-1] % pad_to_multiple != 0:
+        #         if decoder_attention_mask is None:
+        #             decoder_attention_mask = (torch.arange(ceil_to_multiple(input_ids.shape[-1], pad_to_multiple), device=input_ids.device) < input_ids.shape[-1]).expand(input_ids.shape[0], -1)
+        #         else:
+        #             decoder_attention_mask = pad(decoder_attention_mask, pad=(0, remaining_to_multiple(decoder_attention_mask.shape[-1], pad_to_multiple)), value=False)
+        #         input_ids = pad(input_ids, pad=(0, remaining_to_multiple(input_ids.shape[-1], pad_to_multiple)), value=self.config.pad_token_id)
 
         return {
             "decoder_input_ids": input_ids,
