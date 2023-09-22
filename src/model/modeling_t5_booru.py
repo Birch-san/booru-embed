@@ -616,7 +616,9 @@ class T5BooruAttention(nn.Module):
             return hidden_states
 
         # get query states
-        query_states = shape(self.q(hidden_states))  # (batch_size, n_heads, seq_length, dim_per_head)
+        query_states = shape(self.q(hidden_states))
+        # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
+        # xformers: (batch_size, seq_len, n_heads, dim_per_head)
 
         # get key/value states
         key_states = project(
