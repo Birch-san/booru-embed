@@ -897,8 +897,7 @@ class T5BooruBlock(nn.Module):
             use_cache=use_cache,
             output_attentions=output_attentions,
         )
-        hidden_states, present_key_value_state = self_attention_outputs[:2]
-        attention_outputs = self_attention_outputs[2:]  # Keep self-attention outputs and relative position weights
+        hidden_states, present_key_value_state, *self_bias_and_maybe_weights = self_attention_outputs
 
         # clamp inf values to enable fp16 training
         if hidden_states.dtype == torch.float16:
@@ -931,7 +930,7 @@ class T5BooruBlock(nn.Module):
                 use_cache=use_cache,
                 output_attentions=output_attentions,
             )
-            hidden_states, *_ = cross_attention_outputs
+            hidden_states, cross_kv_opt, *cross_bias_and_maybe_weights = cross_attention_outputs
 
             # clamp inf values to enable fp16 training
             if hidden_states.dtype == torch.float16:
@@ -944,10 +943,12 @@ class T5BooruBlock(nn.Module):
 
             # Combine self attn and cross attn key value states
             if present_key_value_state is not None:
-                present_key_value_state = present_key_value_state + cross_attention_outputs[1]
+                present_key_value_state = present_key_value_state + cross_kv_opt
 
             # Keep cross-attention outputs and relative position weights
-            attention_outputs = attention_outputs + cross_attention_outputs[2:]
+            attention_outputs = tuple(self_bias_and_maybe_weights + cross_bias_and_maybe_weights)
+        else:
+            attention_outputs = tuple(self_bias_and_maybe_weights)
 
         # Apply Feed Forward layer
         if self.ffn is not None:
