@@ -74,6 +74,9 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         # TODO: these can be done in parallel. try non_blocking=True
         input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
+        # labels_sentinel: NDArray = self.create_sentinel_ids_np((~mask_indices).astype(np.int8))
+
+        # print(np.allclose(labels_sentinel, labels_sentinel_t.cpu().numpy()))
 
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
         batch_input_ids, _ = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
@@ -98,6 +101,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         # - padded with PAD instead of -100 √
         # verify that attention_mask is based on batch_input_ids; False iff pad √
         # verify that decoder_attention_mask is based on decoder_input_ids; first token is True, thereafter False iff pad √
+        # TODO: looks like it is possible sometimes for 'labels' to begin with a non-MLM token.
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
@@ -123,10 +127,25 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         start_indices[:, 0] = mask_indices[:, 0]
 
         sentinel_ids: ByteTensor = start_indices.cumsum(-1, dtype=torch.int8).where(start_indices != 0, start_indices)
-        sentinel_ids = (self.sentinel_start_ix + sentinel_ids).where(sentinel_ids != 0, 0)
+        sentinel_ids = (self.sentinel_start_ix - 1 + sentinel_ids).where(sentinel_ids != 0, 0)
         sentinel_ids -= mask_indices - start_indices
 
         return sentinel_ids
+
+    # def create_sentinel_ids_np(self, mask_indices: NDArray) -> NDArray:
+    #     """
+    #     Sentinel ids creation given the indices that should be masked.
+    #     The start indices of each mask are replaced by the sentinel ids in increasing
+    #     order. Consecutive mask indices to be deleted are replaced with `-1`.
+    #     """
+    #     start_indices = mask_indices - np.roll(mask_indices, 1, axis=-1) * mask_indices
+    #     start_indices[:, 0] = mask_indices[:, 0]
+
+    #     sentinel_ids = np.where(start_indices != 0, np.cumsum(start_indices, axis=-1), start_indices)
+    #     sentinel_ids = np.where(sentinel_ids != 0, self.sentinel_start_ix + sentinel_ids, 0)
+    #     sentinel_ids -= mask_indices - start_indices
+
+    #     return sentinel_ids
 
     def filter_input_ids(
             self,
