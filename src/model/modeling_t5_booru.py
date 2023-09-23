@@ -572,7 +572,15 @@ class T5BooruAttention(nn.Module):
             # TODO: check if this length contribution is ever anything other than 1
 
         key_length: int = real_seq_length if key_value_states is None else key_value_states.shape[1]
-        extra_key_length_from_past: int = key_length-seq_length
+
+        if past_key_value is None or key_value_states is not None:
+            extra_key_length_from_past: int = 0
+        else:
+            # this is all a best-effort/upper-bound, since we don't know what mask was used over the past key
+            extra_key_length_from_past: int = past_key_value[0].shape[1 if self.use_xformers_attn else 2]
+        
+        if extra_key_length_from_past>1:
+            pass # friendly place to put breakpoint, to learn about this situation
 
         def shape(states: FloatTensor) -> FloatTensor:
             """projection"""
