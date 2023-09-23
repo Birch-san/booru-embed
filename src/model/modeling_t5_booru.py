@@ -569,8 +569,10 @@ class T5BooruAttention(nn.Module):
                     f"past_key_value should have 2 past states: keys and values. Got { len(past_key_value)} past states"
                 )
             real_seq_length += past_key_value[0].shape[1 if self.use_xformers_attn else 2] if query_length is None else query_length
+            # TODO: check if this length contribution is ever anything other than 1
 
-        key_length = real_seq_length if key_value_states is None else key_value_states.shape[1]
+        key_length: int = real_seq_length if key_value_states is None else key_value_states.shape[1]
+        extra_key_length_from_past: int = key_length-seq_length
 
         def shape(states: FloatTensor) -> FloatTensor:
             """projection"""
@@ -672,7 +674,10 @@ class T5BooruAttention(nn.Module):
             #   self.scale * log(key_len, standard_key_len)**.5
             # where standard_key_len is a "preferred" key length (e.g. median key length in the dataset)
             # this will make the logits more uniform, and thus more entropic, for sequences of different lengths.
-            key_states *= input_lengths.log().div(self.log_scale_logits_toward_entropy_of_seq_len).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
+            # note: we need it to be at least 2, since log(1) will just make our key disappear
+            # also: if we receive a previous key via past_key_value: it gets concatenated to our current key, so we need to account for that
+            # caveat: we don't know the mask for the past key. hopefully this only happens for the "decode 1 token at a time" case, where nothing gets masked-out anyway
+            key_states *= (extra_key_length_from_past + input_lengths).clamp_min(2).log().div(self.log_scale_logits_toward_entropy_of_seq_len).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
 
         if self.use_xformers_attn:
             kv_padding = remaining_to_multiple(key_states.size(1), 8)
