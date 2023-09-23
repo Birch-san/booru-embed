@@ -66,6 +66,8 @@ if _xformers_available:
 else:
     xformers = None
 
+XFORMERS_NEG_BIAS=-10000
+
 _CONFIG_FOR_DOC = "T5BooruConfig"
 _CHECKPOINT_FOR_DOC = "t5-small"
 
@@ -566,7 +568,7 @@ class T5BooruAttention(nn.Module):
                 raise ValueError(
                     f"past_key_value should have 2 past states: keys and values. Got { len(past_key_value)} past states"
                 )
-            real_seq_length += past_key_value[0].shape[2] if query_length is None else query_length
+            real_seq_length += past_key_value[0].shape[1 if self.use_xformers_attn else 2] if query_length is None else query_length
 
         key_length = real_seq_length if key_value_states is None else key_value_states.shape[1]
 
@@ -592,23 +594,27 @@ class T5BooruAttention(nn.Module):
             """projects hidden states correctly to key/query states"""
             if key_value_states is None:
                 # self-attn
-                # (batch_size, n_heads, seq_length, dim_per_head)
+                # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
+                # xformers: (batch_size, seq_len, n_heads, dim_per_head)
                 hidden_states = shape(proj_layer(hidden_states))
             elif past_key_value is None:
                 # cross-attn
-                # (batch_size, n_heads, seq_length, dim_per_head)
+                # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
+                # xformers: (batch_size, seq_len, n_heads, dim_per_head)
                 hidden_states = shape(proj_layer(key_value_states))
 
             if past_key_value is not None:
                 if key_value_states is None:
                     # self-attn
-                    # (batch_size, n_heads, key_length, dim_per_head)
-                    hidden_states = torch.cat([past_key_value, hidden_states], dim=2)
-                elif past_key_value.shape[2] != key_value_states.shape[1]:
+                    # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
+                    # xformers: (batch_size, seq_len, n_heads, dim_per_head)
+                    hidden_states = torch.cat([past_key_value, hidden_states], dim=1 if self.use_xformers_attn else 2)
+                elif past_key_value.shape[1 if self.use_xformers_attn else 2] != key_value_states.shape[1]:
                     # checking that the `sequence_length` of the `past_key_value` is the same as
                     # the provided `key_value_states` to support prefix tuning
                     # cross-attn
-                    # (batch_size, n_heads, seq_length, dim_per_head)
+                    # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
+                    # xformers: (batch_size, seq_len, n_heads, dim_per_head)
                     hidden_states = shape(proj_layer(key_value_states))
                 else:
                     # cross-attn
@@ -637,14 +643,18 @@ class T5BooruAttention(nn.Module):
                     position_bias.requires_grad = True
             else:
                 position_bias = self.compute_bias(real_seq_length, key_length, device=query_states.device)
+                # (1, num_heads, query_length, key_length)
 
             # if key and values are already calculated
             # we want only the last query position bias
             if past_key_value is not None:
                 position_bias = position_bias[:, :, -hidden_states.size(1) :, :]
+                # (1, num_heads, 1, key_length)
 
             if mask is not None:
-                position_bias = position_bias + mask  # (batch_size, n_heads, seq_length, key_length)
+                # mask: (batch, 1, 1, key_length)
+                position_bias = position_bias + mask
+                # (batch_size, n_heads, seq_length, key_length)
 
         if self.pruned_heads:
             mask = torch.ones(position_bias.shape[1])
@@ -665,10 +675,19 @@ class T5BooruAttention(nn.Module):
             key_states *= input_lengths.log().div(self.log_scale_logits_toward_entropy_of_seq_len).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
 
         if self.use_xformers_attn:
+            kv_padding = remaining_to_multiple(key_states.size(1), 8)
+            if kv_padding:
+                # don't reassign key_states and value_states, since these will be output into past_key_values without any masking information
+                padded_key_states = pad(key_states, (0, 0, 0, 0, 0, kv_padding))
+                padded_value_states = pad(value_states, (0, 0, 0, 0, 0, kv_padding))
+                position_bias_masked = pad(position_bias_masked, (0, kv_padding), value=XFORMERS_NEG_BIAS)
+            else:
+                padded_key_states = key_states
+                padded_value_states = value_states
             attn_weights: FloatTensor = xformers.ops.memory_efficient_attention(
                 query_states,
-                key_states,
-                value_states,
+                padded_key_states,
+                padded_value_states,
                 attn_bias=position_bias_masked.to(query_states.dtype).contiguous(),
                 p=self.dropout if self.training else 0.,
                 op=self.xformers_attention_op,
@@ -701,6 +720,9 @@ class T5BooruAttention(nn.Module):
         attn_output = unshape(attn_weights)  # (batch_size, seq_length, dim)
         attn_output: FloatTensor = self.o(attn_output)
 
+        # if self.use_xformers_attn:
+        #     key_states = key_states.transpose(1,2)
+        #     value_states = value_states.transpose(1,2)
         present_key_value_state: Optional[KeyValue] = KeyValue(key_states, value_states) if self.is_decoder and use_cache else None
         outputs = AttnOutputs(attn_output, present_key_value_state, position_bias)
 
@@ -1222,7 +1244,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         batch_size, seq_length = input_shape
 
         # required mask seq length can be calculated via length of past
-        mask_seq_length = past_key_values[0][0].shape[2] + seq_length if past_key_values is not None else seq_length
+        mask_seq_length = past_key_values[0][0].shape[1 if self.use_xformers_attn else 2] + seq_length if past_key_values is not None else seq_length
 
         if use_cache is True:
             if not self.is_decoder:
@@ -1247,7 +1269,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         extended_attention_mask = self.get_extended_attention_mask(attention_mask, input_shape, dtype=mask_dtype)
         if self.use_xformers_attn:
             # xformers returns NaN for maximally-negative biases.
-            extended_attention_mask.clamp_min_(-10000)
+            extended_attention_mask.clamp_min_(XFORMERS_NEG_BIAS)
 
         # If a 2D or 3D attention mask is provided for the cross-attention
         # we need to make broadcastable to [batch_size, num_heads, seq_length, seq_length]
@@ -2227,6 +2249,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         if past_key_values is not None:
             input_ids = input_ids[:, -1:]
         
+        # commented-out because although this would be more efficient than padding just-in-time,
+        # it gets a lot more complicated once we start concatenating in an unmasked past_key_values.
         # if self.use_memory_efficient_attention_xformers:
         #     pad_to_multiple = 8
         #     if input_ids.shape[-1] % pad_to_multiple != 0:

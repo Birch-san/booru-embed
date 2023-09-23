@@ -1,5 +1,5 @@
 import torch
-from torch import LongTensor, inference_mode
+from torch import LongTensor, inference_mode, ShortTensor, BoolTensor
 from torch.utils.data import DataLoader
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Literal, Iterable
@@ -177,15 +177,6 @@ class SysArguments:
     cudnn_allow_tf32: Optional[bool] = field(default=None, metadata={"help": 'torch.backends.cudnn.allow_tf32; https://pytorch.org/docs/stable/notes/cuda.html'})
     float32_matmul_precision: Optional[Literal['highest', 'high', 'medium']] = field(default=None, metadata={"help": 'torch.set_float32_matmul_precision(); https://pytorch.org/docs/stable/generated/torch.set_float32_matmul_precision.html', "choices": ['highest', 'high', 'medium']})
 
-# context manager to temporarily disable xformers
-class without_xformers:
-    def __init__(self, model: T5BooruForMaskedLM):
-        self.model = model
-    def __enter__(self):
-        self.model.disable_xformers_memory_efficient_attention()
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.model.enable_xformers_memory_efficient_attention()
-
 def main():
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, TrainingArguments, SysArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -268,12 +259,10 @@ def main():
         # variant='gamma_g',
     )
     
-    without_xformers_ctx: nullcontext | without_xformers = nullcontext()
     if model_args.xformers:
         assert _xformers_available, 'You requested xformers, but the xformers package does not appear to be installed.'
         assert torch.cuda.is_available(), "You requested xformers, but CUDA is not available (you would not be able to use xformers' accelerated CUDA kernels)."
         model.enable_xformers_memory_efficient_attention()
-        without_xformers_ctx = without_xformers(model)
     elif _xformers_available and torch.cuda.is_available():
         logger.warning('xformers is available, but you are not using it.')
     
@@ -377,8 +366,8 @@ def main():
     })
 
     pad_to_multiple: Optional[int] = data_args.pad_to_multiple
-    if model_args.xformers:
-        assert pad_to_multiple is not None and pad_to_multiple % 8 == 0, "To enable xformers: you must ensure that --pad_to_multiple is set to a multiple of 8."
+    # if model_args.xformers:
+    #     assert pad_to_multiple is not None and pad_to_multiple % 8 == 0, "To enable xformers: you must ensure that --pad_to_multiple is set to a multiple of 8."
 
     # Data collator
     # This one will take care of randomly masking the tokens.
@@ -450,19 +439,26 @@ def main():
         # print('\n'.join(''.join('1' if tok else '0' for tok in mask) for mask in batch['decoder_attention_mask'].byte()))
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['unmasked']]
 
+        # it's not necessary to construct decoder_input_ids explicitly (GenerationMixin#_prepare_decoder_input_ids_for_generation would do it for us); this is just documentation
+        #   decoder_input_ids: ShortTensor = torch.full((batch_size, 1), config.decoder_start_token_id, dtype=input_ids.dtype, device=device)
+        # constructing decoder_attention_mask explicitly may help us to concatenate decoder_attention_masks over iterations
+        # via GenerationMixin#_prepare_decoder_input_ids_for_generation
+        #   decoder_attention_mask: BoolTensor = torch.ones((batch_size, 1), dtype=torch.bool, device=device)
+
         max_new_tokens = 20
-        with without_xformers_ctx:
-            out = model.generate(
-                generation_config=GenerationConfig(
-                    max_new_tokens=max_new_tokens,
-                    decoder_start_token_id=config.decoder_start_token_id,
-                    eos_token_id=config.eos_token_id,
-                    pad_token_id=config.pad_token_id,
-                ),
-                input_ids=input_ids,
-                attention_mask=attention_mask,
-                streamer=streamer,
-            )
+        out = model.generate(
+            generation_config=GenerationConfig(
+                max_new_tokens=max_new_tokens,
+                decoder_start_token_id=config.decoder_start_token_id,
+                eos_token_id=config.eos_token_id,
+                pad_token_id=config.pad_token_id,
+            ),
+            input_ids=input_ids,
+            # decoder_input_ids=decoder_input_ids,
+            # decoder_attention_mask=decoder_attention_mask,
+            attention_mask=attention_mask,
+            streamer=streamer,
+        )
         # streamer.acc_tok
         # streamer.decoded
 
