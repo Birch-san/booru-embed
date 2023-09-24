@@ -61,19 +61,29 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         lengths: NDArray = np.hstack([e[0].shape[0] for e in examples], dtype=np.int16)
         max_len: np.int16 = lengths.max()
 
-        input_ids: NDArray = np.full((len(examples), max_len), fill_value=self.pad_token_id, dtype=np.int16)
-        mask_indices: NDArray = np.full((len(examples), max_len), fill_value=False, dtype=np.bool_)
+        # buffer_len = max_len
+        # give buffer a leading pad token in order to support edge-case where we wish to mask token at position 0)
+        buffer_len = max_len + 1
+        input_ids: NDArray = np.full((len(examples), buffer_len), fill_value=self.pad_token_id, dtype=np.int16)
+        mask_indices: NDArray = np.full((len(examples), buffer_len), fill_value=False, dtype=np.bool_)
         for ix, (caption, mask_indices_) in enumerate(examples):
             caption_len = caption.shape[0]
-            input_ids[ix, :caption_len] = caption
-            mask_indices[ix, :caption_len] = mask_indices_
+            # input_ids[ix, :caption_len] = caption
+            # mask_indices[ix, :caption_len] = mask_indices_
+            input_ids[ix, 1:caption_len+1] = caption
+            mask_indices[ix, 1:caption_len+1] = mask_indices_
         
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
         # TODO: these can be done in parallel. try non_blocking=True
         input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
+        # TODO: check that masking of positions 0, 1, 2 produce sane results
+        #       in particular, it feels weird that all <mask_0>(15) tokens are emitted at the same index.
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
+        # labels_sentinel_t contains an extraneous mask token at the end, which has no peer in input_ids_sentinel_t
+        # TODO: is there any situation where the bug *doesn't* happen? maybe when final token is masked?
+        labels_sentinel_t.scatter_(-1, labels_sentinel_t.argmax(dim=-1, keepdim=True), -1)
         # labels_sentinel: NDArray = self.create_sentinel_ids_np((~mask_indices).astype(np.int8))
 
         # print(np.allclose(labels_sentinel, labels_sentinel_t.cpu().numpy()))
@@ -101,7 +111,6 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         # - padded with PAD instead of -100 √
         # verify that attention_mask is based on batch_input_ids; False iff pad √
         # verify that decoder_attention_mask is based on decoder_input_ids; first token is True, thereafter False iff pad √
-        # TODO: looks like it is possible sometimes for 'labels' to begin with a non-MLM token.
         data = BooruBatchData(
             input_ids=batch_input_ids.detach().cpu(),
             attention_mask=attention_mask.detach().cpu(),
