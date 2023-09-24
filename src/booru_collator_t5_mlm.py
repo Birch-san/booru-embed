@@ -57,33 +57,34 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             self.pad_to_multiple = self.max_length
 
     def __call__(self, examples: List[BooruDatum]) -> BatchEncoding:
+        # you can isolate a single example (e.g. shortest sample in batch) for debugging purposes
+        # examples = examples[-3:-2]
+
         # tensorize input
         lengths: NDArray = np.hstack([e[0].shape[0] for e in examples], dtype=np.int16)
         max_len: np.int16 = lengths.max()
 
-        # buffer_len = max_len
         # give buffer a leading pad token in order to support edge-case where we wish to mask token at position 0)
         buffer_len = max_len + 1
         input_ids: NDArray = np.full((len(examples), buffer_len), fill_value=self.pad_token_id, dtype=np.int16)
         mask_indices: NDArray = np.full((len(examples), buffer_len), fill_value=False, dtype=np.bool_)
         for ix, (caption, mask_indices_) in enumerate(examples):
             caption_len = caption.shape[0]
-            # input_ids[ix, :caption_len] = caption
-            # mask_indices[ix, :caption_len] = mask_indices_
             input_ids[ix, 1:caption_len+1] = caption
             mask_indices[ix, 1:caption_len+1] = mask_indices_
+
+        # you can force an edge case like "first token is masked"
+        # mask_indices[0,1] = 1
         
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
         mask_indices_t: BoolTensor = torch.from_numpy(mask_indices).to(self.device, torch.int8)
         # TODO: these can be done in parallel. try non_blocking=True
         input_ids_sentinel_t: ByteTensor = self.create_sentinel_ids(mask_indices_t)
-        # TODO: check that masking of positions 0, 1, 2 produce sane results
-        #       in particular, it feels weird that all <mask_0>(15) tokens are emitted at the same index.
         labels_sentinel_t: ByteTensor = self.create_sentinel_ids(1-mask_indices_t)
-        # labels_sentinel_t contains an extraneous mask token at the end, which has no peer in input_ids_sentinel_t
-        # TODO: is there any situation where the bug *doesn't* happen? maybe when final token is masked?
-        labels_sentinel_t.scatter_(-1, labels_sentinel_t.argmax(dim=-1, keepdim=True), -1)
+        # labels_sentinel_t contains an extraneous mask token at the end, which only has a peer in input_ids_sentinel_t
+        # if the final position is being masked.
+        labels_sentinel_t.masked_fill_(labels_sentinel_t > input_ids_sentinel_t.max(dim=-1, keepdim=True).values, -1)
         # labels_sentinel: NDArray = self.create_sentinel_ids_np((~mask_indices).astype(np.int8))
 
         # print(np.allclose(labels_sentinel, labels_sentinel_t.cpu().numpy()))
@@ -91,9 +92,16 @@ class BooruDataCollatorForT5MLM(BooruCollator):
         input_ids_t: ShortTensor = torch.from_numpy(input_ids).to(self.device)
         batch_input_ids, _ = self.filter_input_ids(input_ids_t, input_ids_sentinel_t, result_pad=self.pad_token_id)
         batch_labels, decoder_input_ids = self.filter_input_ids(input_ids_t, labels_sentinel_t, result_pad=self.label_ignore_index, output_rolled=True)
+        # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids[:,1:]]
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in batch_input_ids]
         # [[-100 if token_ix == -100 else self.vocab.tokens[token_ix] for token_ix in caption] for caption in batch_labels]
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in decoder_input_ids]
+
+        # inspect just the first example
+        # [self.vocab.tokens[token_ix] for token_ix in input_ids_t[0,1:]]
+        # [self.vocab.tokens[token_ix] for token_ix in batch_input_ids[0]]
+        # [-100 if token_ix == -100 else self.vocab.tokens[token_ix] for token_ix in batch_labels[0]]
+        # [self.vocab.tokens[token_ix] for token_ix in decoder_input_ids[0]]
 
         attention_mask: BoolTensor = batch_input_ids != self.pad_token_id
         decoder_attention_mask: BoolTensor = decoder_input_ids != self.pad_token_id
@@ -119,7 +127,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
             decoder_attention_mask=decoder_attention_mask.detach().cpu(),
         )
         if self.include_unmasked:
-            data['unmasked'] = input_ids_t.detach().cpu()
+            data['unmasked'] = input_ids_t[:,1:].detach().cpu()
         batch_encoding = BatchEncoding(
             data=data,
         )
