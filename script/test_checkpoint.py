@@ -246,6 +246,11 @@ def main():
     assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
     assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
     assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
+    # TODO: save this into some kind of config when tokenizer (e.g. vocab.txt) is created
+    mask_token_quantity = 100
+    first_mask_ix: int = vocab.token_to_ix[make_mask_token(0)]
+    # strictly speaking we could just do (first_mask_ix+mask_token_quantity-1), but this verifies that the token exists
+    last_mask_ix: int = vocab.token_to_ix[make_mask_token(mask_token_quantity-1)]
 
     model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
         model_args.model_name_or_path,
@@ -439,11 +444,51 @@ def main():
         # print('\n'.join(''.join('1' if tok else '0' for tok in mask) for mask in batch['decoder_attention_mask'].byte()))
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in batch['unmasked']]
 
+        # print('\n'.join([' '.join(['-100' if token_ix == -100 else vocab.tokens[token_ix] for token_ix in caption[:18]]) for caption in batch['input_ids']]))
+        # print('\n'.join([' '.join(['-100' if token_ix == -100 else vocab.tokens[token_ix] for token_ix in caption[:18]]) for caption in batch['labels']]))
+
         # it's not necessary to construct decoder_input_ids explicitly (GenerationMixin#_prepare_decoder_input_ids_for_generation would do it for us); this is just documentation
         #   decoder_input_ids: ShortTensor = torch.full((batch_size, 1), config.decoder_start_token_id, dtype=input_ids.dtype, device=device)
         # constructing decoder_attention_mask explicitly may help us to concatenate decoder_attention_masks over iterations
         # via GenerationMixin#_prepare_decoder_input_ids_for_generation
         #   decoder_attention_mask: BoolTensor = torch.ones((batch_size, 1), dtype=torch.bool, device=device)
+
+        input_l: List[List[int]] = batch['input_ids'].tolist()
+        labels_l: List[List[int]] = batch['labels'].tolist()
+        unmasked_l: List[List[int]] = batch['unmasked'].tolist()
+        for ix, (input, label, unmasked_) in enumerate(zip(input_l, labels_l, unmasked_l)):
+            try:
+                unmasked_unpad: List[int] = unmasked_[:unmasked_.index(config.pad_token_id)]
+            except ValueError:
+                unmasked_unpad: List[int] = unmasked_
+            unmasked_unpad_eos: List[int] = unmasked_unpad + [vocab.token_to_ix[SpecialToken.EOS.value]]
+            try:
+                input_unpad: List[int] = input[:input.index(config.pad_token_id)]
+            except ValueError:
+                input_unpad: List[int] = input
+            try:
+                label_unpad: List[int] = label[:label.index(-100)]
+            except ValueError:
+                label_unpad: List[int] = label
+
+            reconstructed: List[int] = []
+            for tok in input_unpad:
+                if tok >= first_mask_ix and tok <= last_mask_ix:
+                    start_ix: int = label_unpad.index(tok)+1
+                    try:
+                        end_ix: int = label_unpad.index(tok+1)
+                        slice: List[int] = label_unpad[start_ix:end_ix]
+                    except ValueError:
+                        slice: List[int] = label_unpad[start_ix:-1]
+                    reconstructed.extend(slice)
+                else:
+                    reconstructed.append(tok)
+            # [vocab.tokens[token_ix] for token_ix in input_unpad]
+            # [vocab.tokens[token_ix] for token_ix in label_unpad]
+            # [vocab.tokens[token_ix] for token_ix in reconstructed]
+            # [vocab.tokens[token_ix] for token_ix in unmasked]
+            assert len(reconstructed) == len(unmasked_unpad_eos), f"len(reconstructed) != len(unmasked_unpad_eos) ({len(reconstructed)} != {len(unmasked_unpad_eos)}) for batch index {ix}"
+            assert reconstructed == unmasked_unpad_eos, f"reconstructed != unmasked_unpad_eos for batch index {ix}"
 
         max_new_tokens = 20
         out = model.generate(
