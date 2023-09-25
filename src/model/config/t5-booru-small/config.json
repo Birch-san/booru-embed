@@ -2,7 +2,11 @@
   "architectures": [
     "T5BooruForMaskedLM"
   ],
-  "cross_attn_avg_key_len_init": 18,
+  "continuation_len_avg": {
+    "avg_key_len_init": 18,
+    "population_init": 256,
+    "population_max": 2147483648
+  },
   "d_ff": 1024,
   "d_kv": 64,
   "d_model": 512,
@@ -22,6 +26,11 @@
   "num_layers": 8,
   "output_past": true,
   "pad_token_id": 0,
+  "prompt_len_avg": {
+    "avg_key_len_init": 81,
+    "population_init": 5626898,
+    "population_max": 2147483648
+  },
   "relative_attention_num_buckets": 32,
   "s_reparam_config": {
     "n_iters": 1,
@@ -30,7 +39,6 @@
     "learn_gamma": true,
     "register_v_during_construction": true
   },
-  "self_attn_avg_key_len_init": 81,
   "tie_encoder_ffns": true,
   "tie_word_embeddings": false,
   "use_conv_in": true,

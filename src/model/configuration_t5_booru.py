@@ -9,6 +9,11 @@ class SReparamConfig(TypedDict):
     learn_gamma: bool
     register_v_during_construction: bool
 
+class AttnKeyLenCompensation(TypedDict):
+    avg_key_len_init: int
+    population_init: int
+    population_max: int
+
 class T5BooruConfig(PretrainedConfig):
     r"""
     This is the configuration class to store the configuration of a [`T5Model`] or a [`TFT5Model`]. It is used to
@@ -57,6 +62,8 @@ class T5BooruConfig(PretrainedConfig):
     keys_to_ignore_at_inference = ["past_key_values"]
     attribute_map = {"hidden_size": "d_model", "num_attention_heads": "num_heads", "num_hidden_layers": "num_layers"}
     s_reparam_config: SReparamConfig
+    prompt_len_avg: AttnKeyLenCompensation
+    continuation_len_avg: AttnKeyLenCompensation
 
     def __init__(
         self,
@@ -79,8 +86,18 @@ class T5BooruConfig(PretrainedConfig):
         feed_forward_proj="relu",
         use_conv_in=True,
         is_encoder_decoder=True,
-        cross_attn_avg_key_len_init: Optional[int] = 18,
-        self_attn_avg_key_len_init: Optional[int] = 81,
+        # measured average length of input_ids over entire Danbooru corpus
+        prompt_len_avg: Optional[AttnKeyLenCompensation] = AttnKeyLenCompensation(
+            avg_key_len_init=81,
+            population_init=5_626_898,
+            population_max=2**31,
+        ),
+        # measured average length of labels over first batch of Danbooru corpus
+        continuation_len_avg: Optional[AttnKeyLenCompensation] = AttnKeyLenCompensation(
+            avg_key_len_init=18,
+            population_init=256,
+            population_max=2**31,
+        ),
         # reduces t5-small's params from 65,997,184 -> 54,983,552
         # TODO: grow d_ff
         tie_encoder_ffns=True,
@@ -125,8 +142,8 @@ class T5BooruConfig(PretrainedConfig):
         self.use_conv_in = use_conv_in
         self.use_sigma_reparam = use_sigma_reparam
         self.s_reparam_config = s_reparam_config
-        self.cross_attn_avg_key_len_init = cross_attn_avg_key_len_init
-        self.self_attn_avg_key_len_init = self_attn_avg_key_len_init
+        self.prompt_len_avg = prompt_len_avg
+        self.continuation_len_avg = continuation_len_avg
         self.use_attn_pre_ln = use_attn_pre_ln
         self.use_attn_post_ln = use_attn_post_ln
         self.use_cache = use_cache

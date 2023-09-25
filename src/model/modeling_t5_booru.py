@@ -392,13 +392,13 @@ class T5BooruLayerFF(nn.Module):
 class T5BooruAttention(nn.Module):
     use_xformers_attn: bool
     xformers_attention_op: Optional[Callable]
-    tied_avg_key_len: Optional[Parameter]
+    tied_avg_key_len: Optional[FloatTensor]
 
     def __init__(
         self,
         config: T5BooruConfig,
         has_relative_attention_bias=False,
-        tied_avg_key_len: Optional[Parameter] = None,
+        tied_avg_key_len: Optional[FloatTensor] = None,
     ):
         super().__init__()
         self.is_decoder = config.is_decoder
@@ -756,7 +756,7 @@ class T5BooruLayerSelfAttention(nn.Module):
         self,
         config,
         has_relative_attention_bias=False,
-        tied_avg_key_len: Optional[Parameter] = None,
+        tied_avg_key_len: Optional[FloatTensor] = None,
     ):
         super().__init__()
         self.SelfAttention = T5BooruAttention(
@@ -879,8 +879,8 @@ class T5BooruBlock(nn.Module):
         config,
         has_relative_attention_bias=False,
         tied_ffn: Optional[T5BooruLayerFF] = None,
-        tied_self_attn_avg_key_len: Optional[Parameter] = None,
-        tied_cross_attn_avg_key_len: Optional[Parameter] = None,
+        tied_self_attn_avg_key_len: Optional[FloatTensor] = None,
+        tied_cross_attn_avg_key_len: Optional[FloatTensor] = None,
     ):
         super().__init__()
         self.is_decoder = config.is_decoder
@@ -1151,8 +1151,8 @@ class T5BooruStack(T5BooruPreTrainedModel):
         embed_tokens: Optional[Embedding] = None,
         tied_conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
         tied_ffn: Optional[T5BooruLayerFF] = None,
-        tied_self_attn_avg_key_len: Optional[Parameter] = None,
-        tied_cross_attn_avg_key_len: Optional[Parameter] = None,
+        tied_self_attn_avg_key_len: Optional[FloatTensor] = None,
+        tied_cross_attn_avg_key_len: Optional[FloatTensor] = None,
     ):
         super().__init__(config)
 
@@ -1646,10 +1646,16 @@ class T5BooruModel(T5BooruPreTrainedModel):
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
-    tied_self_attn_avg_key_len: Optional[Parameter]
-    tied_cross_attn_avg_key_len: Optional[Parameter]
+    
+    prompt_avg_key_len: Optional[FloatTensor]
+    prompt_avg_key_len_population: Optional[int]
+    prompt_avg_key_len_population_max: Optional[int]
+    continuation_avg_key_len: Optional[FloatTensor]
+    continuation_avg_key_len_population: Optional[int]
+    continuation_avg_key_len_population_max: Optional[int]
 
-    wants_input_lengths: bool
+    wants_prompt_lengths: bool
+    wants_continuation_lengths: bool
 
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
@@ -1686,27 +1692,48 @@ class T5BooruModel(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
-        
-        if config.self_attn_avg_key_len_init is not None:
-            for ix in range(encoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
-                )
 
-        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
-            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
-        )
-        self.tied_cross_attn_avg_key_len = None if config.cross_attn_avg_key_len_init is None else Parameter(
-            torch.tensor(config.cross_attn_avg_key_len_init, dtype=torch.float32)
-        )
-        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None or config.cross_attn_avg_key_len_init is not None
+        if config.prompt_len_avg is None:
+            self.prompt_avg_key_len = None
+            self.prompt_avg_key_len_population = None
+            self.prompt_avg_key_len_population_max = None
+            self.wants_prompt_lengths = False
+        else:
+            self.register_buffer(
+                'prompt_avg_key_len',
+                torch.tensor(
+                    config.prompt_len_avg['avg_key_len_init'],
+                    dtype=torch.float32,
+                )
+            )
+            self.prompt_avg_key_len_population = config.prompt_len_avg['population_init']
+            self.prompt_avg_key_len_population_max = config.prompt_len_avg['population_max']
+            self.wants_prompt_lengths = True
+
+        if config.continuation_len_avg is None:
+            self.continuation_avg_key_len = None
+            self.continuation_avg_key_len_population = None
+            self.continuation_avg_key_len_population_max = None
+            self.wants_continuation_lengths = False
+        else:
+            self.register_buffer(
+                'continuation_avg_key_len',
+                torch.tensor(
+                    config.continuation_len_avg['avg_key_len_init'],
+                    dtype=torch.float32,
+                )
+            )
+            self.continuation_avg_key_len_population = config.continuation_len_avg['population_init']
+            self.continuation_avg_key_len_population_max = config.continuation_len_avg['population_max']
+            self.wants_continuation_lengths = True
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
-            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            tied_self_attn_avg_key_len=self.prompt_avg_key_len,
+            # we don't pass in cross-attn key length because encoder is self-attn-only
         )
 
         decoder_config = copy.deepcopy(config)
@@ -1714,24 +1741,13 @@ class T5BooruModel(T5BooruPreTrainedModel):
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
 
-        if config.self_attn_avg_key_len_init is not None:
-            for ix in range(encoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'decoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
-                )
-        if config.cross_attn_avg_key_len_init is not None:
-            for ix in range(decoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'decoder.block.{ix}.cross_attn.EncDecAttention.tied_avg_key_len.weight',
-                )
-
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
-            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
-            tied_cross_attn_avg_key_len=self.tied_cross_attn_avg_key_len,
+            tied_self_attn_avg_key_len=self.continuation_avg_key_len,
+            tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
         )
 
         # Initialize weights and apply final processing
@@ -1849,11 +1865,22 @@ class T5BooruModel(T5BooruPreTrainedModel):
                 warnings.warn(__HEAD_MASK_WARNING_MSG, FutureWarning)
                 decoder_head_mask = head_mask
 
-        if input_lengths is None and self.wants_input_lengths:
-            if attention_mask is None:
-                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
-            else:
-                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if self.wants_prompt_lengths:
+            if input_lengths is None:
+                if attention_mask is None:
+                    input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+                else:
+                    input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+            if self.training:
+                batch_size: int = input_lengths.size(0)
+                new_population: int = self.prompt_avg_key_len_population + batch_size
+                self.prompt_avg_key_len.copy_((
+                    self.prompt_avg_key_len.item() * self.prompt_avg_key_len_population +
+                    input_lengths.sum().item()
+                ) / new_population)
+                # over-representing recent samples is better than overflow
+                if new_population < self.prompt_avg_key_len_population_max:
+                    self.prompt_avg_key_len_population = new_population
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -1887,11 +1914,22 @@ class T5BooruModel(T5BooruPreTrainedModel):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
         
-        if decoder_input_lengths is None and self.wants_input_lengths:
-            if decoder_attention_mask is None:
-                decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
-            else:
-                decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if self.wants_continuation_lengths:
+            if decoder_input_lengths is None:
+                if decoder_attention_mask is None:
+                    decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
+                else:
+                    decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+            if self.training:
+                batch_size: int = decoder_input_lengths.size(0)
+                new_population: int = self.continuation_avg_key_len_population + batch_size
+                self.continuation_avg_key_len.copy_((
+                    self.continuation_avg_key_len.item() * self.continuation_avg_key_len_population +
+                    decoder_input_lengths.sum().item()
+                ) / new_population)
+                # over-representing recent samples is better than overflow
+                if new_population < self.continuation_avg_key_len_population_max:
+                    self.continuation_avg_key_len_population = new_population
 
         # Decode
         decoder_outputs = self.decoder(
@@ -1941,13 +1979,18 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
-    tied_self_attn_avg_key_len: Optional[Parameter]
-    tied_cross_attn_avg_key_len: Optional[Parameter]
+    prompt_avg_key_len: Optional[FloatTensor]
+    prompt_avg_key_len_population: Optional[int]
+    prompt_avg_key_len_population_max: Optional[int]
+    continuation_avg_key_len: Optional[FloatTensor]
+    continuation_avg_key_len_population: Optional[int]
+    continuation_avg_key_len_population_max: Optional[int]
 
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
-    wants_input_lengths: bool
+    wants_prompt_lengths: bool
+    wants_continuation_lengths: bool
     use_memory_efficient_attention_xformers: bool
 
     def __init__(self, config: T5BooruConfig):
@@ -1991,27 +2034,47 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
-        
-        if config.self_attn_avg_key_len_init is not None:
-            for ix in range(encoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
-                )
 
-        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
-            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
-        )
-        self.tied_cross_attn_avg_key_len = None if config.cross_attn_avg_key_len_init is None else Parameter(
-            torch.tensor(config.cross_attn_avg_key_len_init, dtype=torch.float32)
-        )
-        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None or config.cross_attn_avg_key_len_init is not None
+        if config.prompt_len_avg is None:
+            self.prompt_avg_key_len = None
+            self.prompt_avg_key_len_population = None
+            self.prompt_avg_key_len_population_max = None
+            self.wants_prompt_lengths = False
+        else:
+            self.register_buffer(
+                'prompt_avg_key_len',
+                torch.tensor(
+                    config.prompt_len_avg['avg_key_len_init'],
+                    dtype=torch.float32,
+                )
+            )
+            self.prompt_avg_key_len_population = config.prompt_len_avg['population_init']
+            self.prompt_avg_key_len_population_max = config.prompt_len_avg['population_max']
+            self.wants_prompt_lengths = True
+
+        if config.continuation_len_avg is None:
+            self.continuation_avg_key_len = None
+            self.continuation_avg_key_len_population = None
+            self.continuation_avg_key_len_population_max = None
+            self.wants_continuation_lengths = False
+        else:
+            self.register_buffer(
+                'continuation_avg_key_len',
+                torch.tensor(
+                    config.continuation_len_avg['avg_key_len_init'],
+                    dtype=torch.float32,
+                )
+            )
+            self.continuation_avg_key_len_population = config.continuation_len_avg['population_init']
+            self.continuation_avg_key_len_population_max = config.continuation_len_avg['population_max']
+            self.wants_continuation_lengths = True
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
-            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            tied_self_attn_avg_key_len=self.prompt_avg_key_len,
             # we don't pass in cross-attn key length because encoder is self-attn-only
         )
 
@@ -2020,24 +2083,13 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
 
-        if config.self_attn_avg_key_len_init is not None:
-            for ix in range(encoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'decoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
-                )
-        if config.cross_attn_avg_key_len_init is not None:
-            for ix in range(decoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'decoder.block.{ix}.cross_attn.EncDecAttention.tied_avg_key_len.weight',
-                )
-
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
-            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
-            tied_cross_attn_avg_key_len=self.tied_cross_attn_avg_key_len,
+            tied_self_attn_avg_key_len=self.continuation_avg_key_len,
+            tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -2229,11 +2281,22 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         # [[self.vocab.tokens[token_ix] for token_ix in caption] for caption in input_ids]
 
-        if input_lengths is None and self.wants_input_lengths:
-            if attention_mask is None:
-                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
-            else:
-                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if self.wants_prompt_lengths:
+            if input_lengths is None:
+                if attention_mask is None:
+                    input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+                else:
+                    input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+            if self.training:
+                batch_size: int = input_lengths.size(0)
+                new_population: int = self.prompt_avg_key_len_population + batch_size
+                self.prompt_avg_key_len.copy_((
+                    self.prompt_avg_key_len.item() * self.prompt_avg_key_len_population +
+                    input_lengths.sum().item()
+                ) / new_population)
+                # over-representing recent samples is better than overflow
+                if new_population < self.prompt_avg_key_len_population_max:
+                    self.prompt_avg_key_len_population = new_population
 
         # Encode if needed (training, first prediction pass)
         if encoder_outputs is None:
@@ -2276,11 +2339,22 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             if decoder_attention_mask is not None:
                 decoder_attention_mask = decoder_attention_mask.to(self.decoder.first_device)
 
-        if decoder_input_lengths is None and self.wants_input_lengths:
-            if decoder_attention_mask is None:
-                decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
-            else:
-                decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if self.wants_continuation_lengths:
+            if decoder_input_lengths is None:
+                if decoder_attention_mask is None:
+                    decoder_input_lengths = torch.full_like(decoder_input_ids, fill_value=decoder_input_ids.shape[-1], dtype=torch.int16)
+                else:
+                    decoder_input_lengths = decoder_attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+            if self.training:
+                batch_size: int = decoder_input_lengths.size(0)
+                new_population: int = self.continuation_avg_key_len_population + batch_size
+                self.continuation_avg_key_len.copy_((
+                    self.continuation_avg_key_len.item() * self.continuation_avg_key_len_population +
+                    decoder_input_lengths.sum().item()
+                ) / new_population)
+                # over-representing recent samples is better than overflow
+                if new_population < self.continuation_avg_key_len_population_max:
+                    self.continuation_avg_key_len_population = new_population
 
         # Decode
         decoder_outputs = self.decoder(
@@ -2429,9 +2503,11 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
-    tied_self_attn_avg_key_len: Optional[Parameter]
+    prompt_avg_key_len: Optional[FloatTensor]
+    prompt_avg_key_len_population: Optional[int]
+    prompt_avg_key_len_population_max: Optional[int]
 
-    wants_input_lengths: bool
+    wants_prompt_lengths: bool
 
     def __init__(self, config: T5BooruConfig):
         super().__init__(config)
@@ -2465,24 +2541,30 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
-        
-        if config.self_attn_avg_key_len_init is not None:
-            for ix in range(encoder_config.num_layers):
-                self._tied_weights_keys.append(
-                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
-                )
 
-        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
-            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
-        )
-        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None
+        if config.prompt_len_avg is None:
+            self.prompt_avg_key_len = None
+            self.prompt_avg_key_len_population = None
+            self.prompt_avg_key_len_population_max = None
+            self.wants_prompt_lengths = False
+        else:
+            self.register_buffer(
+                'prompt_avg_key_len',
+                torch.tensor(
+                    config.prompt_len_avg['avg_key_len_init'],
+                    dtype=torch.float32,
+                )
+            )
+            self.prompt_avg_key_len_population = config.prompt_len_avg['population_init']
+            self.prompt_avg_key_len_population_max = config.prompt_len_avg['population_max']
+            self.wants_prompt_lengths = True
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
-            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            tied_self_attn_avg_key_len=self.prompt_avg_key_len,
         )
 
         # Initialize weights and apply final processing
@@ -2570,11 +2652,22 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         ```"""
         return_dict = return_dict if return_dict is not None else self.config.use_return_dict
 
-        if input_lengths is None and self.wants_input_lengths:
-            if attention_mask is None:
-                input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
-            else:
-                input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+        if self.wants_prompt_lengths:
+            if input_lengths is None:
+                if attention_mask is None:
+                    input_lengths = torch.full_like(input_ids, fill_value=input_ids.shape[-1], dtype=torch.int16)
+                else:
+                    input_lengths = attention_mask.sum(-1, keepdims=True, dtype=torch.int16)
+            if self.training:
+                batch_size: int = input_lengths.size(0)
+                new_population: int = self.prompt_avg_key_len_population + batch_size
+                self.prompt_avg_key_len.copy_((
+                    self.prompt_avg_key_len.item() * self.prompt_avg_key_len_population +
+                    input_lengths.sum().item()
+                ) / new_population)
+                # over-representing recent samples is better than overflow
+                if new_population < self.prompt_avg_key_len_population_max:
+                    self.prompt_avg_key_len_population = new_population
 
         encoder_outputs = self.encoder(
             input_ids=input_ids,
