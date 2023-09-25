@@ -2,6 +2,7 @@
   "architectures": [
     "T5BooruForMaskedLM"
   ],
+  "cross_attn_avg_key_len_init": 18,
   "d_ff": 1024,
   "d_kv": 64,
   "d_model": 512,
@@ -29,7 +30,7 @@
     "learn_gamma": true,
     "register_v_during_construction": true
   },
-  "scale_logits_toward_entropy_of_seq_len": 81,
+  "self_attn_avg_key_len_init": 81,
   "tie_encoder_ffns": true,
   "tie_word_embeddings": false,
   "use_conv_in": true,

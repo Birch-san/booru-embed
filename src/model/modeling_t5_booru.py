@@ -23,7 +23,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple
 
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
-from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear
+from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear, Parameter
 from torch.nn.functional import scaled_dot_product_attention, pad
 from torch.utils.checkpoint import checkpoint
 
@@ -392,9 +392,14 @@ class T5BooruLayerFF(nn.Module):
 class T5BooruAttention(nn.Module):
     use_xformers_attn: bool
     xformers_attention_op: Optional[Callable]
-    log_scale_logits_toward_entropy_of_seq_len: Optional[float]
+    tied_avg_key_len: Optional[Parameter]
 
-    def __init__(self, config: T5BooruConfig, has_relative_attention_bias=False):
+    def __init__(
+        self,
+        config: T5BooruConfig,
+        has_relative_attention_bias=False,
+        tied_avg_key_len: Optional[Parameter] = None,
+    ):
         super().__init__()
         self.is_decoder = config.is_decoder
         self.has_relative_attention_bias = has_relative_attention_bias
@@ -406,7 +411,7 @@ class T5BooruAttention(nn.Module):
         self.n_heads = config.num_heads
         self.dropout = config.dropout_rate
         self.inner_dim = self.n_heads * self.key_value_proj_dim
-        self.log_scale_logits_toward_entropy_of_seq_len = math.log(config.scale_logits_toward_entropy_of_seq_len)
+        self.tied_avg_key_len=tied_avg_key_len
 
         # Mesh TensorFlow initialization to avoid scaling before softmax
         self.q = nn.Linear(self.d_model, self.inner_dim, bias=False)
@@ -673,7 +678,7 @@ class T5BooruAttention(nn.Module):
         else:
             position_bias_masked = position_bias
 
-        if self.log_scale_logits_toward_entropy_of_seq_len is not None and input_lengths is not None:
+        if self.tied_avg_key_len is not None and input_lengths is not None:
             # Training-free Diffusion Model Adaptation for Variable-Sized Text-to-Image Synthesis
             # https://arxiv.org/abs/2306.08645
             # instead of scaling logits by:
@@ -685,7 +690,7 @@ class T5BooruAttention(nn.Module):
             # note: we need it to be at least 2, since log(1) will just make our key disappear
             # also: if we receive a previous key via past_key_value: it gets concatenated to our current key, so we need to account for that
             # caveat: we don't know the mask for the past key. hopefully this only happens for the "decode 1 token at a time" case, where nothing gets masked-out anyway
-            key_states *= (extra_key_length_from_past + input_lengths).clamp_min(2).log().div(self.log_scale_logits_toward_entropy_of_seq_len).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
+            key_states *= (extra_key_length_from_past + input_lengths).clamp_min(2).log().div(self.tied_avg_key_len.clamp_min(2).log()).sqrt().to(key_states.dtype).unsqueeze(-1).unsqueeze(-1)
 
         if self.use_xformers_attn:
             kv_padding = remaining_to_multiple(key_states.size(1), 8)
@@ -747,9 +752,18 @@ class T5BooruAttention(nn.Module):
 class T5BooruLayerSelfAttention(nn.Module):
     pre_ln: Optional[T5BooruLayerNorm]
     post_ln: Optional[T5BooruLayerNorm]
-    def __init__(self, config, has_relative_attention_bias=False):
+    def __init__(
+        self,
+        config,
+        has_relative_attention_bias=False,
+        tied_avg_key_len: Optional[Parameter] = None,
+    ):
         super().__init__()
-        self.SelfAttention = T5BooruAttention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.SelfAttention = T5BooruAttention(
+            config,
+            has_relative_attention_bias=has_relative_attention_bias,
+            tied_avg_key_len=tied_avg_key_len,
+        )
         self.pre_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_pre_ln else None
         self.post_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_post_ln else None
         self.dropout = nn.Dropout(config.dropout_rate)
@@ -797,9 +811,17 @@ class T5BooruLayerSelfAttention(nn.Module):
 class T5BooruLayerCrossAttention(nn.Module):
     pre_ln: Optional[T5BooruLayerNorm]
     post_ln: Optional[T5BooruLayerNorm]
-    def __init__(self, config):
+    def __init__(
+        self,
+        config,
+        tied_avg_key_len: Optional[Parameter] = None,
+    ):
         super().__init__()
-        self.EncDecAttention = T5BooruAttention(config, has_relative_attention_bias=False)
+        self.EncDecAttention = T5BooruAttention(
+            config,
+            has_relative_attention_bias=False,
+            tied_avg_key_len=tied_avg_key_len,
+        )
         self.pre_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_pre_ln else None
         self.post_ln = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon) if config.use_attn_post_ln else None
         self.dropout = nn.Dropout(config.dropout_rate)
@@ -857,17 +879,23 @@ class T5BooruBlock(nn.Module):
         config,
         has_relative_attention_bias=False,
         tied_ffn: Optional[T5BooruLayerFF] = None,
+        tied_self_attn_avg_key_len: Optional[Parameter] = None,
+        tied_cross_attn_avg_key_len: Optional[Parameter] = None,
     ):
         super().__init__()
         self.is_decoder = config.is_decoder
-        self.self_attn = T5BooruLayerSelfAttention(config, has_relative_attention_bias=has_relative_attention_bias)
+        self.self_attn = T5BooruLayerSelfAttention(
+            config,
+            has_relative_attention_bias=has_relative_attention_bias,
+            tied_avg_key_len=tied_self_attn_avg_key_len,
+        )
         if self.is_decoder:
-            self.cross_attn = T5BooruLayerCrossAttention(config)
-        
-        if config.is_decoder:
-            assert tied_ffn is None, "tying of FFN is not implemented for decoders; we are following 'One Wide FeedForward is All You Need', whose advice for decoders is to remove FFN rather than tie it"
-            self.ffn = T5BooruLayerFF(config) if config.decoder_mlp else None
-        elif config.tie_encoder_ffns:
+            self.cross_attn = T5BooruLayerCrossAttention(
+                config,
+                tied_avg_key_len=tied_cross_attn_avg_key_len,
+            )
+
+        if config.tie_encoder_ffns and not config.is_decoder:
             assert tied_ffn is not None
             self.ffn = tied_ffn
             # just in case we need a plan B for how to tie FFN,
@@ -886,7 +914,9 @@ class T5BooruBlock(nn.Module):
             #     self.ffn.DenseReluDense.wi.weight = self.ffn.DenseReluDense.wi.weight
             # self.ffn.DenseReluDense.wo.weight = self.ffn.DenseReluDense.wo.weight
         else:
-            self.ffn = T5BooruLayerFF(config)
+            if config.tie_encoder_ffns:
+                assert tied_ffn is None, "tying of FFN is not implemented for decoders; we are following 'One Wide FeedForward is All You Need', whose advice for decoders is to remove FFN rather than tie it"
+            self.ffn = T5BooruLayerFF(config) if config.decoder_mlp or not config.is_decoder else None
 
     def forward(
         self,
@@ -1110,9 +1140,9 @@ class T5BooruPreTrainedModel(PreTrainedModel):
 
 
 class T5BooruStack(T5BooruPreTrainedModel):
-    use_xformers_attn: bool
     embed_tokens: Optional[Embedding]
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    use_xformers_attn: bool
     needs_reentrant_checkpoint: bool
 
     def __init__(
@@ -1121,6 +1151,8 @@ class T5BooruStack(T5BooruPreTrainedModel):
         embed_tokens: Optional[Embedding] = None,
         tied_conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
         tied_ffn: Optional[T5BooruLayerFF] = None,
+        tied_self_attn_avg_key_len: Optional[Parameter] = None,
+        tied_cross_attn_avg_key_len: Optional[Parameter] = None,
     ):
         super().__init__(config)
 
@@ -1130,7 +1162,13 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self.needs_reentrant_checkpoint = config.use_sigma_reparam
 
         self.block = nn.ModuleList(
-            [T5BooruBlock(config, has_relative_attention_bias=bool(i == 0), tied_ffn=tied_ffn) for i in range(config.num_layers)]
+            [T5BooruBlock(
+                config,
+                has_relative_attention_bias=bool(i == 0),
+                tied_ffn=tied_ffn,
+                tied_self_attn_avg_key_len=tied_self_attn_avg_key_len,
+                tied_cross_attn_avg_key_len=tied_cross_attn_avg_key_len,
+            ) for i in range(config.num_layers)]
         )
         self.final_layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
@@ -1608,6 +1646,8 @@ class T5BooruModel(T5BooruPreTrainedModel):
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
+    tied_self_attn_avg_key_len: Optional[Parameter]
+    tied_cross_attn_avg_key_len: Optional[Parameter]
 
     wants_input_lengths: bool
 
@@ -1646,26 +1686,53 @@ class T5BooruModel(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
+        
+        if config.self_attn_avg_key_len_init is not None:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
+                )
+
+        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
+            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
+        )
+        self.tied_cross_attn_avg_key_len = None if config.cross_attn_avg_key_len_init is None else Parameter(
+            torch.tensor(config.cross_attn_avg_key_len_init, dtype=torch.float32)
+        )
+        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None or config.cross_attn_avg_key_len_init is not None
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
+            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
         )
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
+
+        if config.self_attn_avg_key_len_init is not None:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'decoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
+                )
+        if config.cross_attn_avg_key_len_init is not None:
+            for ix in range(decoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'decoder.block.{ix}.cross_attn.EncDecAttention.tied_avg_key_len.weight',
+                )
+
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
+            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            tied_cross_attn_avg_key_len=self.tied_cross_attn_avg_key_len,
         )
-
-        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -1874,6 +1941,9 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
+    tied_self_attn_avg_key_len: Optional[Parameter]
+    tied_cross_attn_avg_key_len: Optional[Parameter]
+
     # for debug (enables decoding of captions)
     vocab: Optional[Vocab] = None
 
@@ -1921,23 +1991,53 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
+        
+        if config.self_attn_avg_key_len_init is not None:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
+                )
+
+        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
+            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
+        )
+        self.tied_cross_attn_avg_key_len = None if config.cross_attn_avg_key_len_init is None else Parameter(
+            torch.tensor(config.cross_attn_avg_key_len_init, dtype=torch.float32)
+        )
+        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None or config.cross_attn_avg_key_len_init is not None
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
+            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            # we don't pass in cross-attn key length because encoder is self-attn-only
         )
 
         decoder_config = copy.deepcopy(config)
         decoder_config.is_decoder = True
         decoder_config.is_encoder_decoder = False
         decoder_config.num_layers = config.num_decoder_layers
+
+        if config.self_attn_avg_key_len_init is not None:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'decoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
+                )
+        if config.cross_attn_avg_key_len_init is not None:
+            for ix in range(decoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'decoder.block.{ix}.cross_attn.EncDecAttention.tied_avg_key_len.weight',
+                )
+
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
+            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
+            tied_cross_attn_avg_key_len=self.tied_cross_attn_avg_key_len,
         )
 
         self.lm_head = nn.Linear(config.d_model, config.vocab_size, bias=False)
@@ -1952,7 +2052,6 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.cross_entropy_loss_fn = CrossEntropyLoss(ignore_index=self.config.label_ignore_index)
         self.z_loss_fn = ZLoss(ignore_index=self.config.label_ignore_index)
 
-        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
         self.use_memory_efficient_attention_xformers = False
 
         # Initialize weights and apply final processing
@@ -2330,6 +2429,7 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
     shared: Embedding
     tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
+    tied_self_attn_avg_key_len: Optional[Parameter]
 
     wants_input_lengths: bool
 
@@ -2365,15 +2465,25 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
             self.tied_ffn = T5BooruLayerFF(encoder_config)
         else:
             self.tied_ffn = None
+        
+        if config.self_attn_avg_key_len_init is not None:
+            for ix in range(encoder_config.num_layers):
+                self._tied_weights_keys.append(
+                    f'encoder.block.{ix}.self_attn.SelfAttention.tied_avg_key_len.weight',
+                )
+
+        self.tied_self_attn_avg_key_len = None if config.self_attn_avg_key_len_init is None else Parameter(
+            torch.tensor(config.self_attn_avg_key_len_init, dtype=torch.float32)
+        )
+        self.wants_input_lengths = config.self_attn_avg_key_len_init is not None
 
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
             tied_conv_in=self.tied_conv_in,
             tied_ffn=self.tied_ffn,
+            tied_self_attn_avg_key_len=self.tied_self_attn_avg_key_len,
         )
-
-        self.wants_input_lengths = config.scale_logits_toward_entropy_of_seq_len is not None
 
         # Initialize weights and apply final processing
         self.post_init()

@@ -79,7 +79,10 @@ class T5BooruConfig(PretrainedConfig):
         feed_forward_proj="relu",
         use_conv_in=True,
         is_encoder_decoder=True,
-        scale_logits_toward_entropy_of_seq_len: Optional[int] = 128,
+        cross_attn_avg_key_len_init: Optional[int] = 18,
+        self_attn_avg_key_len_init: Optional[int] = 81,
+        # reduces t5-small's params from 65,997,184 -> 54,983,552
+        # TODO: grow d_ff
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
         use_sigma_reparam=False,
@@ -122,7 +125,8 @@ class T5BooruConfig(PretrainedConfig):
         self.use_conv_in = use_conv_in
         self.use_sigma_reparam = use_sigma_reparam
         self.s_reparam_config = s_reparam_config
-        self.scale_logits_toward_entropy_of_seq_len = scale_logits_toward_entropy_of_seq_len
+        self.cross_attn_avg_key_len_init = cross_attn_avg_key_len_init
+        self.self_attn_avg_key_len_init = self_attn_avg_key_len_init
         self.use_attn_pre_ln = use_attn_pre_ln
         self.use_attn_post_ln = use_attn_post_ln
         self.use_cache = use_cache
