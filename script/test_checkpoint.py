@@ -21,7 +21,6 @@ from numpy.typing import NDArray
 from pathlib import Path
 import re
 from contextlib import nullcontext
-import tqdm
 
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
@@ -424,14 +423,14 @@ def main():
     streamer=Streamer(vocab=vocab, batch_size=batch_size)
 
     data_loader = DataLoader(
-        tokenized_datasets['train'],
+        tokenized_datasets['validation'],
         batch_size=batch_size,
         shuffle=True,
         num_workers=data_args.preprocessing_num_workers or 0,
         collate_fn=data_collator,
     )
     batches: Iterable[BooruBatchData] = data_loader
-    for batch in tqdm.tqdm(batches):
+    for batch in batches:
         input_ids = batch['input_ids'].to(device)
         attention_mask = batch['attention_mask'].to(device)
         labels = batch['labels'].to(device)
