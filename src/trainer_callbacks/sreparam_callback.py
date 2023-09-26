@@ -39,15 +39,15 @@ class SReparamCallback(TrainerCallback):
       SReparam.update_all_(model)
   
   # debugging; don't commit
-  def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-    if args.report_to and 'wandb' in args.report_to:
-      model: T5BooruForMaskedLM = kwargs['model']
-      import wandb
-      wandb.log({
-        'sreparam/lm_head_sigma': model.lm_head.sigma.item(),
-        'sreparam/lm_head_weight_mean': model.lm_head.op.weight.mean().item(),
-        'sreparam/lm_head_weight_max': model.lm_head.op.weight.max().item(),
-        'sreparam/lm_head_weight_min': model.lm_head.op.weight.min().item(),
-        'sreparam/lm_head_weight_var': model.lm_head.op.weight.var().item(),
-      }, step=state.global_step, commit=False)
-      print(model.lm_head.op.weight)
+  # def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
+  #   if args.report_to and 'wandb' in args.report_to:
+  #     model: T5BooruForMaskedLM = kwargs['model']
+  #     import wandb
+  #     wandb.log({
+  #       'sreparam/lm_head_sigma': model.lm_head.sigma.item(),
+  #       'sreparam/lm_head_weight_mean': model.lm_head.op.weight.mean().item(),
+  #       'sreparam/lm_head_weight_max': model.lm_head.op.weight.max().item(),
+  #       'sreparam/lm_head_weight_min': model.lm_head.op.weight.min().item(),
+  #       'sreparam/lm_head_weight_var': model.lm_head.op.weight.var().item(),
+  #     }, step=state.global_step, commit=False)
+  #     # print(model.lm_head.op.weight)
