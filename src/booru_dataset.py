@@ -33,6 +33,8 @@ class BooruDataset(Dataset[BooruDatum]):
     datum: NDArray = self.bucket_content.values[start:end]
     # [self.vocab.tokens[token_ix] for token_ix in datum]
     mask_indices: NDArray = self.random_spans_noise_mask(length=end-start)
+    # if mask_indices[0]:
+    #   pass
     return BooruDatum(
       datum=datum,
       mask_indices=mask_indices,

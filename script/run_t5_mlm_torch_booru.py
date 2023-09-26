@@ -50,6 +50,9 @@ from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
     HfArgumentParser,
+    T5Tokenizer,
+    T5ForConditionalGeneration,
+    T5Config,
     Trainer,
     TrainerCallback,
     TrainingArguments,
@@ -110,6 +113,9 @@ class ModelArguments:
         default=None,
         metadata={"help": "If training from scratch, pass a model type from the list: " + ", ".join(MODEL_TYPES)},
     )
+    tokenizer_name: Optional[str] = field(
+        default=None, metadata={"help": "[used only for --actual_t5 mode] Pretrained tokenizer name or path if not the same as model_name"}
+    )
     config_overrides: Optional[str] = field(
         default=None,
         metadata={
@@ -121,9 +127,6 @@ class ModelArguments:
     )
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
-    )
-    tokenizer_name: Optional[str] = field(
-        default=None, metadata={"help": "Pretrained tokenizer name or path if not the same as model_name"}
     )
     cache_dir: Optional[str] = field(
         default=None,
@@ -174,6 +177,7 @@ class ModelArguments:
             )
         },
     )
+    actual_t5: bool = field(default=False, metadata={"help": 'original gangsta T5'})
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -413,10 +417,12 @@ def main():
         "token": model_args.token,
         "trust_remote_code": model_args.trust_remote_code,
     }
-    if model_args.config_name:
-        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.config_name, **config_kwargs)
-    elif model_args.model_name_or_path:
-        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+    config_name: Optional[str] = model_args.config_name or model_args.model_name_or_path
+    if config_name:
+        if model_args.actual_t5:
+            config: T5BooruConfig | T5Config = T5Config.from_pretrained(config_name, **config_kwargs)
+        else:
+            config: T5BooruConfig | T5Config = T5BooruConfig.from_pretrained(config_name, **config_kwargs)
     else:
         config = CONFIG_MAPPING[model_args.model_type]()
         logger.warning("You are instantiating a new config instance from scratch.")
@@ -430,29 +436,45 @@ def main():
     # create this file by running scripts/make_tokenizer.py
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
-    assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
-    if config.pad_vocab_to_multiple:
-        for ix in range(remaining_to_multiple(len(vocab.tokens), config.pad_vocab_to_multiple)):
-            vocab.add_token(make_vocab_pad_token(ix))
-    assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
-    assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
+    if not model_args.actual_t5:
+        assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
+        if config.pad_vocab_to_multiple:
+            for ix in range(remaining_to_multiple(len(vocab.tokens), config.pad_vocab_to_multiple)):
+                vocab.add_token(make_vocab_pad_token(ix))
+        assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
+        assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
     assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
 
     if model_args.model_name_or_path:
-        model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
-            model_args.model_name_or_path,
-            from_tf=bool(".ckpt" in model_args.model_name_or_path),
-            config=config,
-            cache_dir=model_args.cache_dir,
-            revision=model_args.model_revision,
-            token=model_args.token,
-            trust_remote_code=model_args.trust_remote_code,
-            low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        )
+        common_kwargs = {
+            'config': config,
+            'cache_dir': model_args.cache_dir,
+            'revision': model_args.model_revision,
+            'token': model_args.token,
+            'trust_remote_code': model_args.trust_remote_code,
+            'low_cpu_mem_usage': model_args.low_cpu_mem_usage,
+        }
+        if model_args.actual_t5:
+            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
+                model_args.model_name_or_path,
+                from_tf=bool(".ckpt" in model_args.model_name_or_path),
+                **common_kwargs,
+            )
+        else:
+            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5BooruForMaskedLM.from_pretrained(
+                model_args.model_name_or_path,
+                **common_kwargs,
+            )
     else:
         logger.info("Training new model from scratch")
-        model: T5BooruForMaskedLM = T5BooruForMaskedLM(config)
+        if model_args.actual_t5:
+            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5ForConditionalGeneration(config)
+        else:
+            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5BooruForMaskedLM(config)
     
+    if model_args.actual_t5:
+        assert not model_args.xformers, "xformers support not implemented for OG T5"
+
     if model_args.xformers:
         assert _xformers_available, 'You requested xformers, but the xformers package does not appear to be installed.'
         assert torch.cuda.is_available(), "You requested xformers, but CUDA is not available (you would not be able to use xformers' accelerated CUDA kernels)."
@@ -472,7 +494,21 @@ def main():
     if len(vocab.tokens) > embedding_size:
         model.resize_token_embeddings(len(vocab.tokens))
 
-    max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
+    if model_args.actual_t5:
+        tokenizer_name: Optional[str] = model_args.tokenizer_name or model_args.model_name_or_path
+        assert tokenizer_name is not None
+        tokenizer: T5Tokenizer = T5Tokenizer.from_pretrained(
+            tokenizer_name,
+            cache_dir=model_args.cache_dir,
+            # no point loading platform-specific code for fast tokenizer; we're literally just grabbing this to read its config
+            use_fast=False,
+            token=model_args.token,
+        )
+        config_max_ctx_len: int = tokenizer.model_max_length
+    else:
+        assert isinstance(config, T5BooruConfig)
+        config_max_ctx_len: int = config.max_ctx_len
+    max_seq_length: int = min(data_args.max_seq_length or config_max_ctx_len, config_max_ctx_len)
 
     if training_args.optim == 'sgd':
         # lololol
@@ -615,13 +651,22 @@ def main():
     pad_to_multiple: Optional[int] = data_args.pad_to_multiple
     if model_args.xformers:
         assert pad_to_multiple is not None and pad_to_multiple % 8 == 0, "To enable xformers: you must ensure that --pad_to_multiple is set to a multiple of 8."
+    
+    if model_args.actual_t5:
+        label_ignore_index: int = -100
+        tokens_dtype = np.int64
+    else:
+        assert isinstance(config, T5BooruConfig)
+        label_ignore_index: int = config.label_ignore_index
+        # T5Booru has a cast-to-int32 just before embedding, so can tolerate dataloader sending a narrower type
+        tokens_dtype = np.int16
 
     # Data collator
     # This one will take care of randomly masking the tokens.
     data_collator = BooruDataCollatorForT5MLM(
         eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
         pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
-        label_ignore_index=config.label_ignore_index,
+        label_ignore_index=label_ignore_index,
         sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
         decoder_start_token_id=config.decoder_start_token_id,
         # vocab is optional, to aid in debugging (enables decoding of a sample)
@@ -631,6 +676,7 @@ def main():
         pad_to_max=data_args.pad_to_max_length,
         max_length=max_seq_length,
         device=torch.device(data_args.collator_device),
+        tokens_dtype=tokens_dtype,
     )
     if data_args.replay_collator:
         data_collator = BooruReplayCollator(data_collator)
@@ -641,9 +687,11 @@ def main():
         MemoryUsageCallback(nvml_service=nvml_service),
         TrainDurationCallback(),
     ]
-    if config.use_sigma_reparam:
-        amp_context = get_amp_context(training_args)
-        callbacks.insert(0, SReparamCallback(amp_context=amp_context))
+    if not model_args.actual_t5:
+        assert isinstance(config, T5BooruConfig)
+        if config.use_sigma_reparam:
+            amp_context = get_amp_context(training_args)
+            callbacks.insert(0, SReparamCallback(amp_context=amp_context))
     if my_training_args.log_flops:
         flops_logger.setLevel(INFO)
     if my_training_args.log_memory:

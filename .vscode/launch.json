@@ -210,6 +210,69 @@
       // gradient checkpointing reduces memory to 11403MiB, still batch size 128 xformers mixed, still >3it/s
     },
     {
+      "name": "Python: T5 MLM Torch Booru (batch-of-8, no reporting)",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_torch_booru",
+      "justMyCode": false,
+      "args": [
+        "--config_name", "./src/model/config/t5-booru-small",
+        "--per_device_train_batch_size", "8",
+        "--per_device_eval_batch_size", "4",
+        "--do_train",
+        "--output_dir", "./out-t5-mlm-torch-booru",
+        "--overwrite_output_dir",
+        "--xformers",
+        "--gradient_checkpointing",
+        "--report_to", "none",
+        // "--optim", "adamw_8bit",
+        "--optim", "sgd",
+        "--use_lars",
+        "--sgd_momentum", "0.9",
+        "--log_every_n_steps", "5",
+        "--collator_device", "cpu",
+        "--pad_to_multiple", "8",
+        "--num_train_epochs", "1", // just doing this for now to speed up lr schedule
+        "--learning_rate", "1e-1", // 1e-4 == .0001
+        "--run_name", "batch_8_test",
+      ],
+      "env": {
+        "ACCELERATE_MIXED_PRECISION": "bf16",
+      }
+    },
+    {
+      "name": "Python: T5 MLM Torch Vanilla (batch-of-8, no reporting)",
+      "type": "python",
+      "request": "launch",
+      "module": "script.run_t5_mlm_torch_booru",
+      "justMyCode": false,
+      "args": [
+        "--config_name", "google/t5-v1_1-small",
+        "--tokenizer_name", "google/t5-v1_1-small",
+        "--per_device_train_batch_size", "8",
+        "--per_device_eval_batch_size", "4",
+        "--do_train",
+        "--output_dir", "./out-t5-mlm-torch-booru",
+        "--overwrite_output_dir",
+        "--gradient_checkpointing",
+        "--actual_t5",
+        "--report_to", "none",
+        "--optim", "adamw_8bit",
+        // "--optim", "sgd",
+        // "--use_lars",
+        // "--sgd_momentum", "0.9",
+        // "--log_every_n_steps", "5",
+        "--collator_device", "cpu",
+        // "--pad_to_multiple", "8",
+        "--num_train_epochs", "1", // just doing this for now to speed up lr schedule
+        "--learning_rate", ".00005", // 5e-5 == .00005 // default
+        "--run_name", "ogt5_batch_8_test",
+      ],
+      "env": {
+        "ACCELERATE_MIXED_PRECISION": "bf16",
+      }
+    },
+    {
       "name": "Python: Test checkpoint",
       "type": "python",
       "request": "launch",
@@ -217,9 +280,9 @@
       "justMyCode": false,
       "args": [
         "--output_dir", "./out-t5-mlm-torch-booru",
-        "--model_name_or_path", "./out-sreparam-fix/checkpoint-1000",
-        // "--xformers",
-        // "--pad_to_multiple", "8",
+        "--model_name_or_path", "./out-batch_128_sreparam_lars_1e-1_2/checkpoint-1500",
+        "--xformers",
+        "--pad_to_multiple", "8",
         "--per_device_eval_batch_size", "8",
       ]
     },

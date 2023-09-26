@@ -48,6 +48,10 @@ class BooruDataCollatorForT5MLM(BooruCollator):
     max_length: Optional[int] = None
     endless_none: Iterable[None] = field(default_factory=lambda: repeat(None))
     include_unmasked: bool = False
+    # returning a narrower dtype means sending less data from dataloader process to worker process.
+    # the model will ultimately have to cast input_ids to int32 for embedding, and labels to int64 for CrossEntropy/NLLLoss.
+    # not sure what costs more (model being forced to cast to int64 versus sending an int64 between-processes).
+    tokens_dtype: np.int16 | np.int64 = field(default_factory=lambda: np.int16)
 
     def __post_init__(self):
         assert self.pad_token_id == 0, 'we currently employ in filter_input_ids a condition which ignores both -1 tokens and pad tokens via the criteria `<= 0` (on the basis it may be cheaper than `!= -1 & != self.pad_token_id`). to use a non-zero pad_token_id: we would need to remove this optimization.'
@@ -66,7 +70,7 @@ class BooruDataCollatorForT5MLM(BooruCollator):
 
         # give buffer a leading pad token in order to support edge-case where we wish to mask token at position 0)
         buffer_len = max_len + 1
-        input_ids: NDArray = np.full((len(examples), buffer_len), fill_value=self.pad_token_id, dtype=np.int16)
+        input_ids: NDArray = np.full((len(examples), buffer_len), fill_value=self.pad_token_id, dtype=self.tokens_dtype)
         mask_indices: NDArray = np.full((len(examples), buffer_len), fill_value=False, dtype=np.bool_)
         for ix, (caption, mask_indices_) in enumerate(examples):
             caption_len = caption.shape[0]
