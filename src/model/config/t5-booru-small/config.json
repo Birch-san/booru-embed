@@ -15,6 +15,7 @@
   "dropout_rate": 0.1,
   "eos_token_id": 1,
   "feed_forward_proj": "gated-gelu",
+  "fix_lm_head_weight_init": true,
   "initializer_factor": 1.0,
   "is_encoder_decoder": true,
   "label_ignore_index": -100,

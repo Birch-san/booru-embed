@@ -1073,7 +1073,7 @@ class T5BooruPreTrainedModel(PreTrainedModel):
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
             module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * 1.0)
+                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * self.config.d_model ** -.5 if self.config.fix_lm_head_weight_init else 1.)
             if hasattr(module, "qa_outputs"):
                 module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
                 module.qa_outputs.bias.data.zero_()
@@ -2016,6 +2016,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
+        else:
+            self.tied_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
