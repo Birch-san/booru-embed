@@ -39,6 +39,7 @@ from src.booru_dataset import BooruDataset, BucketContent, RandomSpansNoiseMask
 from src.random_spans_noise_mask import random_spans_noise_mask
 from src.ceil_to_multiple import remaining_to_multiple
 from src.booru_collator import BooruBatchData
+from src.token_streamer import TokenStreamer
 
 require_version("datasets>=1.8.0", "To fix: pip install -r examples/pytorch/language-modeling/requirements.txt")
 
@@ -448,33 +449,8 @@ def main():
     
     model.to(device)
 
-    @dataclass
-    class Streamer(BaseStreamer):
-        vocab: Vocab
-        batch_size: int = field(repr=False)
-        acc_tok: LongTensor = field(init=False)
-        decoded: List[List[str]] = field(init=False)
-        def __post_init__(self):
-            self.decoded = [[] for _ in range(self.batch_size)]
-            self.acc_tok = torch.empty((self.batch_size, 0), dtype=torch.long)
-
-        def put(self, value: LongTensor) -> None:
-            """Function that is called by `.generate()` to push new tokens"""
-            assert value.ndim == 1 or value.ndim == 2
-            for acc, tok in zip(self.decoded, value[:,0] if value.ndim == 2 else value):
-                acc.append(self.vocab.tokens[tok])
-            self.acc_tok = torch.cat([
-                self.acc_tok,
-                value.unsqueeze(-1) if value.ndim == 1 else value,
-            ], dim=-1)
-            pass
-
-        def end(self):
-            """Function that is called by `.generate()` to signal the end of generation"""
-            # raise NotImplementedError()
-            pass
     batch_size=training_args.per_device_eval_batch_size
-    streamer=Streamer(vocab=vocab, batch_size=batch_size)
+    streamer=TokenStreamer(vocab=vocab, batch_size=batch_size)
 
     data_loader = DataLoader(
         tokenized_datasets['validation'],
