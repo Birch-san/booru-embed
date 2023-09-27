@@ -8,7 +8,15 @@ from logging import getLogger
 from transformers.trainer_utils import get_last_checkpoint
 from transformers.utils.import_utils import _is_package_available
 from transformers.utils.versions import require_version
-from transformers import HfArgumentParser, TrainingArguments, GenerationConfig, set_seed
+from transformers import (
+    HfArgumentParser,
+    T5Tokenizer,
+    T5ForConditionalGeneration,
+    T5Config,
+    TrainingArguments,
+    GenerationConfig,
+    set_seed,
+)
 from transformers.generation.streamers import BaseStreamer
 import sys
 import os
@@ -120,6 +128,9 @@ class ModelArguments:
             )
         },
     )
+    tokenizer_name: Optional[str] = field(
+        default=None, metadata={"help": "[used only for --actual_t5 mode] Pretrained tokenizer name or path if not the same as model_name"}
+    )
     config_name: Optional[str] = field(
         default=None, metadata={"help": "Pretrained config name or path if not the same as model_name"}
     )
@@ -168,6 +179,7 @@ class ModelArguments:
             )
         },
     )
+    actual_t5: bool = field(default=False, metadata={"help": 'original gangsta T5'})
 
 @dataclass
 class SysArguments:
@@ -229,40 +241,58 @@ def main():
         "token": model_args.token,
         "trust_remote_code": model_args.trust_remote_code,
     }
-    if model_args.config_name:
-        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.config_name, **config_kwargs)
+    config_name: Optional[str] = model_args.config_name or model_args.model_name_or_path
+    assert config_name
+    if model_args.actual_t5:
+        config: T5BooruConfig | T5Config = T5Config.from_pretrained(config_name, **config_kwargs)
     else:
-        config: T5BooruConfig = T5BooruConfig.from_pretrained(model_args.model_name_or_path, **config_kwargs)
+        config: T5BooruConfig | T5Config = T5BooruConfig.from_pretrained(config_name, **config_kwargs)
 
     # TODO: make a BooruTokenizer class, with an interface a bit more typical of transformers Tokenizers
     vocab = Vocab()
     # create this file by running scripts/make_tokenizer.py
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
-    assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
-    if config.pad_vocab_to_multiple:
-        for ix in range(remaining_to_multiple(len(vocab.tokens), config.pad_vocab_to_multiple)):
-            vocab.add_token(make_vocab_pad_token(ix))
-    assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
-    assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
+    if model_args.actual_t5:
+        config.vocab_size = len(vocab.tokens)
+    else:
+        assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
+        if config.pad_vocab_to_multiple:
+            for ix in range(remaining_to_multiple(len(vocab.tokens), config.pad_vocab_to_multiple)):
+                vocab.add_token(make_vocab_pad_token(ix))
+        assert config.vocab_size == len(vocab.tokens), f"config.vocab_size != len(vocab.tokens) ({config.vocab_size} != {len(vocab.tokens)}). after padding our Vocab to multiple of config.pad_vocab_to_multiple={config.pad_vocab_to_multiple}: we did not reach the config.vocab_size={config.vocab_size}, but rather {len(vocab.tokens)}."
+        assert config.vocab_size % config.pad_vocab_to_multiple == 0, f"something has gone wrong with the maths, and our vocab did not actually end up as a multiple of {config.pad_vocab_to_multiple}, after padding it."
     assert len(vocab.tokens) < (1<<15), "we load our tokenized dataset in int16, which assumes a tokenizer's vocab being smaller than a signed 16-bit integer."
+
     # TODO: save this into some kind of config when tokenizer (e.g. vocab.txt) is created
     mask_token_quantity = 100
     first_mask_ix: int = vocab.token_to_ix[make_mask_token(0)]
     # strictly speaking we could just do (first_mask_ix+mask_token_quantity-1), but this verifies that the token exists
     last_mask_ix: int = vocab.token_to_ix[make_mask_token(mask_token_quantity-1)]
 
-    model: T5BooruForMaskedLM = T5BooruForMaskedLM.from_pretrained(
-        model_args.model_name_or_path,
-        from_tf=bool(".ckpt" in model_args.model_name_or_path),
-        config=config,
-        cache_dir=model_args.cache_dir,
-        revision=model_args.model_revision,
-        token=model_args.token,
-        trust_remote_code=model_args.trust_remote_code,
-        low_cpu_mem_usage=model_args.low_cpu_mem_usage,
-        # variant='gamma_g',
-    )
+    model_common_kwargs = {
+        'config': config,
+        'cache_dir': model_args.cache_dir,
+        'revision': model_args.model_revision,
+        'token': model_args.token,
+        'trust_remote_code': model_args.trust_remote_code,
+        'low_cpu_mem_usage': model_args.low_cpu_mem_usage,
+        # 'variant': 'gamma_g',
+    }
+    if model_args.actual_t5:
+        model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
+            model_args.model_name_or_path,
+            from_tf=bool(".ckpt" in model_args.model_name_or_path),
+            **model_common_kwargs,
+        )
+    else:
+        model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5BooruForMaskedLM.from_pretrained(
+            model_args.model_name_or_path,
+            **model_common_kwargs,
+        )
+
+    if model_args.actual_t5:
+        assert not model_args.xformers, "xformers support not implemented for OG T5"
     
     if model_args.xformers:
         assert _xformers_available, 'You requested xformers, but the xformers package does not appear to be installed.'
@@ -277,7 +307,21 @@ def main():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     assert embedding_size == len(vocab.tokens)
 
-    max_seq_length: int = min(data_args.max_seq_length or config.max_ctx_len, config.max_ctx_len)
+    if model_args.actual_t5:
+        tokenizer_name: Optional[str] = model_args.tokenizer_name or model_args.model_name_or_path
+        assert tokenizer_name is not None
+        tokenizer: T5Tokenizer = T5Tokenizer.from_pretrained(
+            tokenizer_name,
+            cache_dir=model_args.cache_dir,
+            # no point loading platform-specific code for fast tokenizer; we're literally just grabbing this to read its config
+            use_fast=False,
+            token=model_args.token,
+        )
+        config_max_ctx_len: int = tokenizer.model_max_length
+    else:
+        assert isinstance(config, T5BooruConfig)
+        config_max_ctx_len: int = config.max_ctx_len
+    max_seq_length: int = min(data_args.max_seq_length or config_max_ctx_len, config_max_ctx_len)
     
     # https://pytorch.org/docs/stable/notes/cuda.html
     if sys_args.allow_bf16_reduced_precision_reduction is not None:
@@ -374,12 +418,21 @@ def main():
     # if model_args.xformers:
     #     assert pad_to_multiple is not None and pad_to_multiple % 8 == 0, "To enable xformers: you must ensure that --pad_to_multiple is set to a multiple of 8."
 
+    if model_args.actual_t5:
+        label_ignore_index: int = -100
+        tokens_dtype = np.int64
+    else:
+        assert isinstance(config, T5BooruConfig)
+        label_ignore_index: int = config.label_ignore_index
+        # T5Booru has a cast-to-int32 just before embedding, so can tolerate dataloader sending a narrower type
+        tokens_dtype = np.int16
+
     # Data collator
     # This one will take care of randomly masking the tokens.
     data_collator = BooruDataCollatorForT5MLM(
         eos_token_id=vocab.token_to_ix[SpecialToken.EOS.value],
         pad_token_id=vocab.token_to_ix[SpecialToken.Pad.value],
-        label_ignore_index=config.label_ignore_index,
+        label_ignore_index=label_ignore_index,
         sentinel_start_ix=vocab.token_to_ix[make_mask_token(0)],
         decoder_start_token_id=config.decoder_start_token_id,
         # vocab is optional, to aid in debugging (enables decoding of a sample)
@@ -390,6 +443,7 @@ def main():
         max_length=max_seq_length,
         device=torch.device(data_args.collator_device),
         include_unmasked=True,
+        tokens_dtype=tokens_dtype,
     )
     
     model.to(device)
@@ -490,7 +544,7 @@ def main():
             assert len(reconstructed) == len(unmasked_unpad_eos), f"len(reconstructed) != len(unmasked_unpad_eos) ({len(reconstructed)} != {len(unmasked_unpad_eos)}) for batch index {ix}"
             assert reconstructed == unmasked_unpad_eos, f"reconstructed != unmasked_unpad_eos for batch index {ix}"
 
-        max_new_tokens = 20
+        max_new_tokens = decoder_attention_mask.sum(dim=-1).max().item()
         out = model.generate(
             generation_config=GenerationConfig(
                 max_new_tokens=max_new_tokens,
