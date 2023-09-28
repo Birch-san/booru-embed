@@ -10,6 +10,7 @@
   "d_ff": 1024,
   "d_kv": 64,
   "d_model": 512,
+  "decoder_conv_in": false,
   "decoder_mlp": false,
   "decoder_start_token_id": 0,
   "dropout_rate": 0.1,

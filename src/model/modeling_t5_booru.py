@@ -19,7 +19,7 @@ import copy
 import math
 import os
 import warnings
-from typing import Optional, Tuple, Union, Callable, NamedTuple
+from typing import Optional, Tuple, Union, Callable, NamedTuple, List
 
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
@@ -1666,14 +1666,20 @@ class T5BooruModel(T5BooruPreTrainedModel):
             self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
                 self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
-            
+
             indirection = 'op.' if config.use_sigma_reparam else ''
-            self._tied_weights_keys.extend([
+            decoder_conv_in_keys: List[str] = [
                 f'decoder.tied_conv_in.{indirection}weight',
                 f'decoder.tied_conv_in.bias'
+            ] if config.decoder_conv_in else []
+            
+            self._tied_weights_keys.extend([
+                *decoder_conv_in_keys,
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
+        else:
+            self.tied_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1744,7 +1750,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in,
+            tied_conv_in=self.tied_conv_in if config.decoder_conv_in else None,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
             tied_self_attn_avg_key_len=self.continuation_avg_key_len,
             tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
@@ -2007,12 +2013,16 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             out_channels = config.d_model
             self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
-            
+                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+
             indirection = 'op.' if config.use_sigma_reparam else ''
-            self._tied_weights_keys.extend([
+            decoder_conv_in_keys: List[str] = [
                 f'decoder.tied_conv_in.{indirection}weight',
                 f'decoder.tied_conv_in.bias'
+            ] if config.decoder_conv_in else []
+            
+            self._tied_weights_keys.extend([
+                *decoder_conv_in_keys,
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
@@ -2088,7 +2098,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in,
+            tied_conv_in=self.tied_conv_in if config.decoder_conv_in else None,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
             tied_self_attn_avg_key_len=self.continuation_avg_key_len,
             tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
@@ -2526,6 +2536,8 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
+        else:
+            self.tied_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
