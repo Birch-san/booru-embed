@@ -1141,7 +1141,7 @@ class T5BooruPreTrainedModel(PreTrainedModel):
 
 class T5BooruStack(T5BooruPreTrainedModel):
     embed_tokens: Optional[Embedding]
-    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    conv_in: Optional[Conv1d|SReparam[Conv1d]]
     use_xformers_attn: bool
     needs_reentrant_checkpoint: bool
 
@@ -1149,7 +1149,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self,
         config: T5BooruConfig,
         embed_tokens: Optional[Embedding] = None,
-        tied_conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
+        conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
         tied_ffn: Optional[T5BooruLayerFF] = None,
         tied_self_attn_avg_key_len: Optional[FloatTensor] = None,
         tied_cross_attn_avg_key_len: Optional[FloatTensor] = None,
@@ -1157,7 +1157,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         super().__init__(config)
 
         self.embed_tokens = embed_tokens
-        self.tied_conv_in = tied_conv_in
+        self.conv_in = conv_in
         self.is_decoder = config.is_decoder
         self.needs_reentrant_checkpoint = config.use_sigma_reparam
 
@@ -1289,14 +1289,14 @@ class T5BooruStack(T5BooruPreTrainedModel):
             if self.embed_tokens is None:
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds: FloatTensor = self.embed_tokens(input_ids)
-            if self.tied_conv_in is not None:
+            if self.conv_in is not None:
                 if self.is_decoder:
-                    if isinstance(self.tied_conv_in, Conv1d):
-                        conv_in: Conv1d = self.tied_conv_in
-                    elif isinstance(self.tied_conv_in, SReparam):
-                        conv_in: Conv1d = self.tied_conv_in.op
+                    if isinstance(self.conv_in, Conv1d):
+                        conv_in: Conv1d = self.conv_in
+                    elif isinstance(self.conv_in, SReparam):
+                        conv_in: Conv1d = self.conv_in.op
                     else:
-                        raise ValueError(f'expected self.tied_conv_in to be Conv1d or SReparam. got "{type(self.tied_conv_in)}"')
+                        raise ValueError(f'expected self.conv_in to be Conv1d or SReparam. got "{type(self.conv_in)}"')
                     inputs_embeds = conv1d(
                         inputs_embeds.mT,
                         pad(
@@ -1310,19 +1310,19 @@ class T5BooruStack(T5BooruPreTrainedModel):
                         conv_in.groups,
                     )
                     # TODO: share code with SReparam class
-                    if isinstance(self.tied_conv_in, SReparam):
-                        if self.tied_conv_in.bias is None:
-                            quotient: FloatTensor = (self.tied_conv_in.g / self.tied_conv_in.sigma)
+                    if isinstance(self.conv_in, SReparam):
+                        if self.conv_in.bias is None:
+                            quotient: FloatTensor = (self.conv_in.g / self.conv_in.sigma)
                             inputs_embeds *= quotient.to(inputs_embeds.dtype)
                         else:
                             inputs_embeds = torch.addcmul(
-                                self.tied_conv_in.bias.to(inputs_embeds.dtype),
+                                self.conv_in.bias.to(inputs_embeds.dtype),
                                 inputs_embeds,
-                                self.tied_conv_in.to(inputs_embeds.dtype),
-                                value=(1 / self.tied_conv_in.sigma).to(inputs_embeds.dtype),
+                                self.conv_in.to(inputs_embeds.dtype),
+                                value=(1 / self.conv_in.sigma).to(inputs_embeds.dtype),
                             )
                 else:
-                    inputs_embeds = self.tied_conv_in(inputs_embeds.mT)
+                    inputs_embeds = self.conv_in(inputs_embeds.mT)
                 inputs_embeds = inputs_embeds.mT
 
         batch_size, seq_length = input_shape
@@ -1677,7 +1677,8 @@ class T5BooruModel(T5BooruPreTrainedModel):
 
     lm_head: Linear|SReparam[Linear]
     shared: Embedding
-    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    decoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    encoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
     
     prompt_avg_key_len: Optional[FloatTensor]
@@ -1694,25 +1695,38 @@ class T5BooruModel(T5BooruPreTrainedModel):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
-        if config.use_conv_in:
+        if config.encoder_conv_in:
             out_channels = config.d_model
-            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
+            self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
-            decoder_conv_in_keys: List[str] = [
-                f'decoder.tied_conv_in.{indirection}weight',
-                f'decoder.tied_conv_in.bias'
-            ] if config.decoder_conv_in else []
-            
             self._tied_weights_keys.extend([
-                *decoder_conv_in_keys,
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
         else:
-            self.tied_conv_in = None
+            self.encoder_conv_in = None
+        
+        if config.decoder_conv_in:
+            out_channels = config.d_model
+            assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
+            if config.encoder_conv_in and config.tie_conv_in:
+                self.decoder_conv_in = self.encoder_conv_in
+            else:
+                self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            if config.use_sigma_reparam:
+                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+
+            indirection = 'op.' if config.use_sigma_reparam else ''
+            self._tied_weights_keys.extend([
+                f'decoder.tied_conv_in.{indirection}weight',
+                f'decoder.tied_conv_in.bias'
+            ])
+        else:
+            self.decoder_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -1769,7 +1783,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in,
+            conv_in=self.encoder_conv_in,
             tied_ffn=self.tied_ffn,
             tied_self_attn_avg_key_len=self.prompt_avg_key_len,
             # we don't pass in cross-attn key length because encoder is self-attn-only
@@ -1783,7 +1797,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in if config.decoder_conv_in else None,
+            conv_in=self.decoder_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
             tied_self_attn_avg_key_len=self.continuation_avg_key_len,
             tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
@@ -2015,7 +2029,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
     shared: Embedding
     lm_head: Linear|SReparam[Linear]
-    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    decoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    encoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
     prompt_avg_key_len: Optional[FloatTensor]
@@ -2042,26 +2057,38 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
-        if config.use_conv_in:
+        if config.encoder_conv_in:
             out_channels = config.d_model
             assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
-            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
-            decoder_conv_in_keys: List[str] = [
-                f'decoder.tied_conv_in.{indirection}weight',
-                f'decoder.tied_conv_in.bias'
-            ] if config.decoder_conv_in else []
-            
             self._tied_weights_keys.extend([
-                *decoder_conv_in_keys,
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
         else:
-            self.tied_conv_in = None
+            self.encoder_conv_in = None
+        
+        if config.decoder_conv_in:
+            out_channels = config.d_model
+            assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
+            if config.encoder_conv_in and config.tie_conv_in:
+                self.decoder_conv_in = self.encoder_conv_in
+            else:
+                self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            if config.use_sigma_reparam:
+                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+
+            indirection = 'op.' if config.use_sigma_reparam else ''
+            self._tied_weights_keys.extend([
+                f'decoder.tied_conv_in.{indirection}weight',
+                f'decoder.tied_conv_in.bias'
+            ])
+        else:
+            self.decoder_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.is_decoder = False
@@ -2118,7 +2145,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in,
+            conv_in=self.encoder_conv_in,
             tied_ffn=self.tied_ffn,
             tied_self_attn_avg_key_len=self.prompt_avg_key_len,
             # we don't pass in cross-attn key length because encoder is self-attn-only
@@ -2132,7 +2159,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         self.decoder = T5BooruStack(
             decoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in if config.decoder_conv_in else None,
+            conv_in=self.decoder_conv_in,
             # we don't pass in tied_ffn, because "One Wide FeedForward is All You Need" recommends removing decoder FFN altogether
             tied_self_attn_avg_key_len=self.continuation_avg_key_len,
             tied_cross_attn_avg_key_len=self.prompt_avg_key_len,
@@ -2283,7 +2310,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        z_loss: Optional[float] = 1e-4
+        z_loss: Optional[float] = None#, 1e-4
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -2547,7 +2574,8 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
 
     lm_head: Linear|SReparam[Linear]
     shared: Embedding
-    tied_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    decoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    encoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
     prompt_avg_key_len: Optional[FloatTensor]
     prompt_avg_key_len_population: Optional[int]
@@ -2559,19 +2587,20 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         super().__init__(config)
         self.shared = nn.Embedding(config.vocab_size, config.d_model)
 
-        if config.use_conv_in:
+        if config.encoder_conv_in:
             out_channels = config.d_model
-            self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+            assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
+            self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
-            
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
                 f'encoder.tied_conv_in.{indirection}weight',
                 f'encoder.tied_conv_in.bias'
             ])
         else:
-            self.tied_conv_in = None
+            self.encoder_conv_in = None
 
         encoder_config = copy.deepcopy(config)
         encoder_config.use_cache = False
@@ -2610,7 +2639,7 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
         self.encoder = T5BooruStack(
             encoder_config,
             self.shared,
-            tied_conv_in=self.tied_conv_in,
+            conv_in=self.encoder_conv_in,
             tied_ffn=self.tied_ffn,
             tied_self_attn_avg_key_len=self.prompt_avg_key_len,
         )

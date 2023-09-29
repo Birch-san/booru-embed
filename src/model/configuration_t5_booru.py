@@ -74,6 +74,7 @@ class T5BooruConfig(PretrainedConfig):
         decoder_conv_in=True,
         decoder_mlp=False,
         decoder_start_token_id=0,
+        encoder_conv_in=True,
         max_ctx_len=256,
         num_layers=6,
         num_decoder_layers=None,
@@ -85,7 +86,6 @@ class T5BooruConfig(PretrainedConfig):
         layer_norm_epsilon=1e-6,
         initializer_factor=1.0,
         feed_forward_proj="relu",
-        use_conv_in=True,
         is_encoder_decoder=True,
         # measured average length of input_ids over entire Danbooru corpus
         prompt_len_avg: Optional[AttnKeyLenCompensation] = AttnKeyLenCompensation(
@@ -101,6 +101,7 @@ class T5BooruConfig(PretrainedConfig):
         ),
         # reduces t5-small's params from 65,997,184 -> 54,983,552
         # TODO: grow d_ff
+        tie_conv_in=True,
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
         use_sigma_reparam=False,
@@ -128,6 +129,7 @@ class T5BooruConfig(PretrainedConfig):
         self.d_ff = d_ff
         self.decoder_conv_in = decoder_conv_in
         self.decoder_mlp = decoder_mlp
+        self.encoder_conv_in = encoder_conv_in
         self.max_ctx_len = max_ctx_len
         self.num_layers = num_layers
         self.num_decoder_layers = (
@@ -141,8 +143,8 @@ class T5BooruConfig(PretrainedConfig):
         self.layer_norm_epsilon = layer_norm_epsilon
         self.initializer_factor = initializer_factor
         self.feed_forward_proj = feed_forward_proj
+        self.tie_conv_in = tie_conv_in
         self.tie_encoder_ffns = tie_encoder_ffns
-        self.use_conv_in = use_conv_in
         self.use_sigma_reparam = use_sigma_reparam
         self.s_reparam_config = s_reparam_config
         self.prompt_len_avg = prompt_len_avg
