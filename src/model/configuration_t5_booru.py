@@ -71,8 +71,7 @@ class T5BooruConfig(PretrainedConfig):
         d_model=512,
         d_kv=64,
         d_ff=2048,
-        # don't enable this; it leaks future information, breaking the model
-        decoder_conv_in=False,
+        decoder_conv_in=True,
         decoder_mlp=False,
         decoder_start_token_id=0,
         max_ctx_len=256,

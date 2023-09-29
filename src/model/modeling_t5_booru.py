@@ -24,7 +24,7 @@ from typing import Optional, Tuple, Union, Callable, NamedTuple, List
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
 from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear, Parameter
-from torch.nn.functional import scaled_dot_product_attention, pad
+from torch.nn.functional import scaled_dot_product_attention, pad, conv1d
 from torch.utils.checkpoint import checkpoint
 
 from transformers.activations import ACT2FN
@@ -1290,7 +1290,40 @@ class T5BooruStack(T5BooruPreTrainedModel):
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds: FloatTensor = self.embed_tokens(input_ids)
             if self.tied_conv_in is not None:
-                inputs_embeds = self.tied_conv_in(inputs_embeds.transpose(-2, -1)).transpose(-2, -1)
+                if self.is_decoder:
+                    if isinstance(self.tied_conv_in, Conv1d):
+                        conv_in: Conv1d = self.tied_conv_in
+                    elif isinstance(self.tied_conv_in, SReparam):
+                        conv_in: Conv1d = self.tied_conv_in.op
+                    else:
+                        raise ValueError(f'expected self.tied_conv_in to be Conv1d or SReparam. got "{type(self.tied_conv_in)}"')
+                    inputs_embeds = conv1d(
+                        inputs_embeds.mT,
+                        pad(
+                            conv_in.weight[:,:,:-1],
+                            pad=(0, 1),
+                        ),
+                        conv_in.bias,
+                        conv_in.stride,
+                        conv_in.padding,
+                        conv_in.dilation,
+                        conv_in.groups,
+                    )
+                    # TODO: share code with SReparam class
+                    if isinstance(self.tied_conv_in, SReparam):
+                        if self.tied_conv_in.bias is None:
+                            quotient: FloatTensor = (self.tied_conv_in.g / self.tied_conv_in.sigma)
+                            inputs_embeds *= quotient.to(inputs_embeds.dtype)
+                        else:
+                            inputs_embeds = torch.addcmul(
+                                self.tied_conv_in.bias.to(inputs_embeds.dtype),
+                                inputs_embeds,
+                                self.tied_conv_in.to(inputs_embeds.dtype),
+                                value=(1 / self.tied_conv_in.sigma).to(inputs_embeds.dtype),
+                            )
+                else:
+                    inputs_embeds = self.tied_conv_in(inputs_embeds.mT)
+                inputs_embeds = inputs_embeds.mT
 
         batch_size, seq_length = input_shape
 
@@ -2011,6 +2044,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
         if config.use_conv_in:
             out_channels = config.d_model
+            assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
             self.tied_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
                 self.tied_conv_in = SReparam(self.tied_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
