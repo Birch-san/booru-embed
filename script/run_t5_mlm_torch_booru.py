@@ -37,6 +37,7 @@ from functools import partial
 import torch
 from torch import LongTensor
 from torch.optim import Optimizer, SGD
+from torch.optim.lr_scheduler import LambdaLR
 from torchlars import LARS
 from itertools import pairwise
 from logging import INFO
@@ -65,6 +66,7 @@ from transformers.utils.versions import require_version
 from transformers.utils.import_utils import _is_package_available
 
 from src.create_optimizer import create_optimizer
+from src.create_schedule import get_inverse_sqrt_schedule
 from src.optimizer_and_scheduler import OptimizerAndScheduler
 from src.get_amp_context import get_amp_context
 from src.vocab import Vocab
@@ -509,28 +511,6 @@ def main():
         assert isinstance(config, T5BooruConfig)
         config_max_ctx_len: int = config.max_ctx_len
     max_seq_length: int = min(data_args.max_seq_length or config_max_ctx_len, config_max_ctx_len)
-
-    if training_args.optim == 'sgd':
-        # lololol
-        optimizer = SGD(
-            model.parameters(),
-            lr=training_args.learning_rate,
-            momentum=my_training_args.sgd_momentum,
-            weight_decay=training_args.weight_decay,
-        )
-        # TODO:
-        #   work out how to decay by param group
-        #   use Apple's lr schedule
-        #   check again how Adam behaves with a higher LR
-        #   evaluate task performance
-        #   try running out-batch_128_sreparam_all_lars_1e-1
-    else:
-        optimizer: Optimizer = create_optimizer(model, training_args)
-    
-    if my_training_args.use_lars:
-        optimizer = LARS(optimizer)
-
-    optimizer_and_scheduler = OptimizerAndScheduler(optimizer, None)
     
     device = torch.device('cuda')
 
@@ -619,6 +599,39 @@ def main():
         if data_args.max_train_samples is not None:
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
+
+    if training_args.optim == 'sgd':
+        # lololol
+        optimizer = SGD(
+            model.parameters(),
+            lr=training_args.learning_rate,
+            momentum=my_training_args.sgd_momentum,
+            weight_decay=training_args.weight_decay,
+        )
+        # TODO:
+        #   work out how to decay by param group
+        #   use Apple's lr schedule
+        #   check again how Adam behaves with a higher LR
+        #   evaluate task performance
+        #   try running out-batch_128_sreparam_all_lars_1e-1
+    else:
+        optimizer: Optimizer = create_optimizer(model, training_args)
+    
+    if my_training_args.use_lars:
+        optimizer = LARS(optimizer)
+    
+    if training_args.lr_scheduler_type == 'inverse_sqrt':
+        assert optimizer is not None
+        max_steps: int = len(train_dataset)//training_args.per_device_train_batch_size
+        num_warmup_steps: int = training_args.get_warmup_steps(max_steps)
+        schedule: LambdaLR = get_inverse_sqrt_schedule(
+            optimizer=optimizer,
+            num_warmup_steps=num_warmup_steps,
+        )
+    else:
+        schedule: Optional[LambdaLR] = None
+
+    optimizer_and_scheduler = OptimizerAndScheduler(optimizer, schedule)
 
     if training_args.do_eval:
         if "validation" not in tokenized_datasets:
