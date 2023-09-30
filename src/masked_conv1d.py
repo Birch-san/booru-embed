@@ -1,11 +1,14 @@
-from .conv_nd import WeightOverrideConvNd
-from typing import Union, Optional
+from typing import Union, Optional, Tuple
+import math
+import torch
 from torch import Tensor
 from torch.utils import _single
 import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t
 from torch._torch_docs import reproducibility_notes
 from torch.nn.modules.conv import convolution_notes
+
+from .conv_nd import WeightOverrideConvNd
 
 class MaskedConv1d(WeightOverrideConvNd):
     __doc__ = r"""Applies a 1D convolution over an input signal composed of several input
@@ -106,6 +109,8 @@ class MaskedConv1d(WeightOverrideConvNd):
         https://github.com/vdumoulin/conv_arithmetic/blob/master/README.md
     """
 
+    weight_padding: Tensor
+
     def __init__(
         self,
         in_channels: int,
@@ -123,13 +128,28 @@ class MaskedConv1d(WeightOverrideConvNd):
         factory_kwargs = {'device': device, 'dtype': dtype}
         # we create new variables below to make mypy happy since kernel_size has
         # type Union[int, Tuple[int]] and kernel_size_ has type Tuple[int]
-        kernel_size_ = _single(kernel_size)
+        kernel_size_: Tuple[int] = _single(kernel_size)
+
+        kernel_size_nominal, *_ = kernel_size_
+        kernel_weights_size: int = math.ceil(kernel_size_nominal/2)
+        weights_padding_size: int = kernel_size_nominal - kernel_weights_size
+        kernel_weights_size_t: Tuple[int] = (kernel_weights_size,)
+
         stride_ = _single(stride)
         padding_ = padding if isinstance(padding, str) else _single(padding)
         dilation_ = _single(dilation)
+
+        weight = torch.empty(
+            (out_channels, in_channels // groups, *kernel_weights_size_t), **factory_kwargs)
+
+        self.register_buffer('weight_padding', torch.zeros(
+            (*weight.shape[:-1], weights_padding_size),
+            requires_grad=False,
+        ), persistent=False)
+
         super().__init__(
             in_channels, out_channels, kernel_size_, stride_, padding_, dilation_,
-            False, _single(0), groups, bias, padding_mode, **factory_kwargs)
+            False, _single(0), groups, bias, padding_mode, weight=weight, **factory_kwargs)
 
     def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
         if self.padding_mode != 'zeros':
@@ -140,4 +160,5 @@ class MaskedConv1d(WeightOverrideConvNd):
                         self.padding, self.dilation, self.groups)
 
     def forward(self, input: Tensor) -> Tensor:
-        return self._conv_forward(input, self.weight, self.bias)
+        weight: Tensor = torch.cat((self.weight, self.weight_padding), dim=-1)
+        return self._conv_forward(input, weight, self.bias)
