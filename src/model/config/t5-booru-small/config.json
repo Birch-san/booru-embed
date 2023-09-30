@@ -17,6 +17,7 @@
   "encoder_conv_in": true,
   "eos_token_id": 1,
   "feed_forward_proj": "gated-gelu",
+  "fix_embed_weight_init": true,
   "fix_lm_head_weight_init": true,
   "initializer_factor": 1.0,
   "is_encoder_decoder": true,

@@ -1071,9 +1071,15 @@ class T5BooruPreTrainedModel(PreTrainedModel):
         elif isinstance(module, (T5BooruModel, T5BooruForMaskedLM, T5BooruEncoderModel)):
             # Mesh TensorFlow embeddings initialization
             # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
-            module.shared.weight.data.normal_(mean=0.0, std=factor * 1.0)
+            # prefer .05 (Mesh TensorFlow default)
+            # https://github.com/huggingface/transformers/pull/26441#issuecomment-1741865284
+            # note: there is some doubt over this
+            # https://github.com/huggingface/transformers/pull/26441#issuecomment-1741877125
+            module.shared.weight.data.normal_(mean=0.0, std=factor * (.05 if self.config.fix_embed_weight_init else 1.))
             if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * self.config.d_model ** -.5 if self.config.fix_lm_head_weight_init else 1.)
+                # prefer dim ** -.5 (initialize like the other Linear layers)
+                # https://github.com/huggingface/transformers/pull/26441
+                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * (self.config.d_model ** -.5 if self.config.fix_lm_head_weight_init else 1.))
             if hasattr(module, "qa_outputs"):
                 module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
                 module.qa_outputs.bias.data.zero_()
