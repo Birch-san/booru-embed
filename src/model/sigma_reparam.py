@@ -120,7 +120,7 @@ class SReparam(nn.Module, Generic[M]):
         # note: this condition may cost you a graph break if you are using torch.compile().
         # if you are using late-init: prefer to run your init_all_via_trace() *before* torch.compile(),
         # so that the noattr branch never needs to be compiled.
-        if not hasattr(self, 'v'):
+        if not hasattr(self, 'v') and self.training:
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
         # TODO: fastpath to fuse hadamards into operation
