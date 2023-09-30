@@ -1317,7 +1317,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
                             inputs_embeds = torch.addcmul(
                                 self.conv_in.bias.to(inputs_embeds.dtype),
                                 inputs_embeds,
-                                self.conv_in.to(inputs_embeds.dtype),
+                                self.conv_in.g.to(inputs_embeds.dtype),
                                 value=(1 / self.conv_in.sigma).to(inputs_embeds.dtype),
                             )
                 else:
@@ -2078,8 +2078,8 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
                 self.decoder_conv_in = self.encoder_conv_in
             else:
                 self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
-            if config.use_sigma_reparam:
-                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
+                if config.use_sigma_reparam:
+                    self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
