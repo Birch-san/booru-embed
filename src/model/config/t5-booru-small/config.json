@@ -42,6 +42,7 @@
     "learn_gamma": true,
     "register_v_during_construction": true
   },
+  "sreparam_multi_head": false,
   "tie_conv_in": false,
   "tie_encoder_ffns": true,
   "tie_word_embeddings": false,

@@ -38,6 +38,7 @@
   "self_attn_avg_key_len_init": 81,
   "self_attn_avg_key_len_population_init": 5626898,
   "self_attn_avg_key_len_population_max": 2147483648,
+  "sreparam_multi_head": false,
   "tie_conv_in": false,
   "tie_encoder_ffns": true,
   "tie_word_embeddings": false,

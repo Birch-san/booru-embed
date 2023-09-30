@@ -104,6 +104,7 @@ class T5BooruConfig(PretrainedConfig):
         tie_conv_in=True,
         tie_encoder_ffns=True,
         tie_word_embeddings=False,
+        sreparam_multi_head=False,
         use_sigma_reparam=False,
         use_attn_pre_ln=False,
         use_attn_post_ln=True,
@@ -146,6 +147,7 @@ class T5BooruConfig(PretrainedConfig):
         self.tie_conv_in = tie_conv_in
         self.tie_encoder_ffns = tie_encoder_ffns
         self.use_sigma_reparam = use_sigma_reparam
+        self.sreparam_multi_head = sreparam_multi_head
         self.s_reparam_config = s_reparam_config
         self.prompt_len_avg = prompt_len_avg
         self.continuation_len_avg = continuation_len_avg
