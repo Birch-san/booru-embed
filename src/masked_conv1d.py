@@ -110,6 +110,8 @@ class MaskedConv1d(WeightOverrideConvNd):
     """
 
     weight_padding: Tensor
+    tied_weight: Optional[Tensor]
+    tied_bias: Optional[Tensor]
 
     def __init__(
         self,
@@ -122,6 +124,8 @@ class MaskedConv1d(WeightOverrideConvNd):
         groups: int = 1,
         bias: bool = True,
         padding_mode: str = 'zeros',  # TODO: refine this type
+        tied_weight: Optional[Tensor] = None,
+        tied_bias: Optional[Tensor] = None,
         device=None,
         dtype=None,
     ) -> None:
@@ -139,8 +143,16 @@ class MaskedConv1d(WeightOverrideConvNd):
         padding_ = padding if isinstance(padding, str) else _single(padding)
         dilation_ = _single(dilation)
 
-        weight = torch.empty(
-            (out_channels, in_channels // groups, *kernel_weights_size_t), **factory_kwargs)
+        if tied_weight is None:
+            assert tied_bias is None, "won't use tied_bias without a tied_weight"
+            self.tied_weight = None
+            self.tied_bias = None
+            weight = torch.empty(
+                (out_channels, in_channels // groups, *kernel_weights_size_t), **factory_kwargs)
+        else:
+            self.tied_weight = tied_weight
+            self.tied_bias = tied_bias
+            weight = None
 
         self.register_buffer('weight_padding', torch.zeros(
             (*weight.shape[:-1], weights_padding_size),
@@ -160,5 +172,13 @@ class MaskedConv1d(WeightOverrideConvNd):
                         self.padding, self.dilation, self.groups)
 
     def forward(self, input: Tensor) -> Tensor:
-        weight: Tensor = torch.cat((self.weight, self.weight_padding), dim=-1)
-        return self._conv_forward(input, weight, self.bias)
+        if self.tied_weight is None:
+            weight: Tensor = torch.cat((self.weight, self.weight_padding), dim=-1)
+            bias: Tensor = self.tied_bias
+        else:
+            weight: Tensor = torch.cat((
+                self.tied_weight[:,:,:-self.weight_padding.size(-1)],
+                self.weight_padding,
+            ), dim=-1)
+            bias: Tensor = self.tied_bias
+        return self._conv_forward(input, weight, bias)

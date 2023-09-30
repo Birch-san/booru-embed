@@ -23,7 +23,7 @@ class WeightOverrideConvNd(Module):
     output_padding: Tuple[int, ...]
     groups: int
     padding_mode: str
-    weight: Tensor
+    weight: Optional[Tensor]
     bias: Optional[Tensor]
 
     def __init__(
@@ -40,6 +40,7 @@ class WeightOverrideConvNd(Module):
         bias: bool,
         padding_mode: str,
         weight: Optional[Tensor],
+        uses_tied_weight: bool,
         device=None,
         dtype=None,
     ) -> None:
@@ -89,21 +90,26 @@ class WeightOverrideConvNd(Module):
         else:
             self._reversed_padding_repeated_twice = _reverse_repeat_tuple(self.padding, 2)
 
-        if weight is None:
-            if transposed:
-                self.weight = Parameter(torch.empty(
-                    (in_channels, out_channels // groups, *kernel_size), **factory_kwargs))
+        if uses_tied_weight:
+            self.weight = None
+            self.bias = None
+        else:
+            expected_shape: Tuple[int, ...] = (
+                in_channels, out_channels // groups, *kernel_size
+            ) if transposed else (
+                out_channels, in_channels // groups, *kernel_size
+            )
+            if weight is None:
+                self.weight = Parameter(torch.empty(expected_shape, **factory_kwargs))
             else:
-                self.weight = Parameter(torch.empty(
-                    (out_channels, in_channels // groups, *kernel_size), **factory_kwargs))
-        else:
-            self.weight = Parameter(weight)
-        if bias:
-            self.bias = Parameter(torch.empty(out_channels, **factory_kwargs))
-        else:
-            self.register_parameter('bias', None)
+                assert weight.shape == expected_shape, f"Received weight with shape '{weight.shape}', expected '{expected_shape}'."
+                self.weight = Parameter(weight)
+            if bias:
+                self.bias = Parameter(torch.empty(out_channels, **factory_kwargs))
+            else:
+                self.register_parameter('bias', None)
 
-        self.reset_parameters()
+            self.reset_parameters()
 
     def reset_parameters(self) -> None:
         # Setting a=sqrt(5) in kaiming_uniform is the same as initializing with
