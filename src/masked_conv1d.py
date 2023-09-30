@@ -2,7 +2,7 @@ from typing import Union, Optional, Tuple
 import math
 import torch
 from torch import Tensor
-from torch.utils import _single
+from torch.nn.modules.utils import _single
 import torch.nn.functional as F
 from torch.nn.common_types import _size_1_t
 from torch._torch_docs import reproducibility_notes
@@ -147,21 +147,23 @@ class MaskedConv1d(WeightOverrideConvNd):
             assert tied_bias is None, "won't use tied_bias without a tied_weight"
             self.tied_weight = None
             self.tied_bias = None
-            weight = torch.empty(
-                (out_channels, in_channels // groups, *kernel_weights_size_t), **factory_kwargs)
+            weight_shape = (out_channels, in_channels // groups, *kernel_weights_size_t)
+            weight = torch.empty(weight_shape, **factory_kwargs)
         else:
+            weight_shape = tied_weight.shape
             self.tied_weight = tied_weight
             self.tied_bias = tied_bias
+            assert bias == (self.tied_bias is not None)
             weight = None
-
-        self.register_buffer('weight_padding', torch.zeros(
-            (*weight.shape[:-1], weights_padding_size),
-            requires_grad=False,
-        ), persistent=False)
 
         super().__init__(
             in_channels, out_channels, kernel_size_, stride_, padding_, dilation_,
-            False, _single(0), groups, bias, padding_mode, weight=weight, **factory_kwargs)
+            False, _single(0), groups, bias, padding_mode, weight=weight, uses_tied_weight=(tied_weight is not None), **factory_kwargs)
+
+        self.register_buffer('weight_padding', torch.zeros(
+            (*weight_shape[:-1], weights_padding_size),
+            requires_grad=False,
+        ), persistent=False)
 
     def _conv_forward(self, input: Tensor, weight: Tensor, bias: Optional[Tensor]):
         if self.padding_mode != 'zeros':
@@ -174,7 +176,7 @@ class MaskedConv1d(WeightOverrideConvNd):
     def forward(self, input: Tensor) -> Tensor:
         if self.tied_weight is None:
             weight: Tensor = torch.cat((self.weight, self.weight_padding), dim=-1)
-            bias: Tensor = self.tied_bias
+            bias: Tensor = self.bias
         else:
             weight: Tensor = torch.cat((
                 self.tied_weight[:,:,:-self.weight_padding.size(-1)],

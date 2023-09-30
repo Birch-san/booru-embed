@@ -1,8 +1,8 @@
 from typing import List, Tuple, Union, Optional
 import torch
-from torch import Tensor, init
-from torch.utils import _reverse_repeat_tuple
-from torch.nn import Module, Parameter
+from torch import Tensor
+from torch.nn.modules.utils import _reverse_repeat_tuple
+from torch.nn import Module, Parameter, init
 import math
 
 class WeightOverrideConvNd(Module):
@@ -94,15 +94,14 @@ class WeightOverrideConvNd(Module):
             self.weight = None
             self.bias = None
         else:
-            expected_shape: Tuple[int, ...] = (
-                in_channels, out_channels // groups, *kernel_size
-            ) if transposed else (
-                out_channels, in_channels // groups, *kernel_size
-            )
             if weight is None:
+                expected_shape: Tuple[int, ...] = (
+                    in_channels, out_channels // groups, *kernel_size
+                ) if transposed else (
+                    out_channels, in_channels // groups, *kernel_size
+                )
                 self.weight = Parameter(torch.empty(expected_shape, **factory_kwargs))
             else:
-                assert weight.shape == expected_shape, f"Received weight with shape '{weight.shape}', expected '{expected_shape}'."
                 self.weight = Parameter(weight)
             if bias:
                 self.bias = Parameter(torch.empty(out_channels, **factory_kwargs))

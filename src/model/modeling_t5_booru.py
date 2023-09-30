@@ -54,6 +54,7 @@ from .sigma_reparam import SReparam, SReparamSupportedModule
 from ..vocab import Vocab
 from ..z_loss import ZLoss
 from ..ceil_to_multiple import remaining_to_multiple, ceil_to_multiple
+from ..masked_conv1d import MaskedConv1d
 
 
 logger = logging.get_logger(__name__)
@@ -1141,7 +1142,7 @@ class T5BooruPreTrainedModel(PreTrainedModel):
 
 class T5BooruStack(T5BooruPreTrainedModel):
     embed_tokens: Optional[Embedding]
-    conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    conv_in: Optional[Conv1d|MaskedConv1d|SReparam[Conv1d|MaskedConv1d]]
     use_xformers_attn: bool
     needs_reentrant_checkpoint: bool
 
@@ -1149,7 +1150,7 @@ class T5BooruStack(T5BooruPreTrainedModel):
         self,
         config: T5BooruConfig,
         embed_tokens: Optional[Embedding] = None,
-        conv_in: Optional[Conv1d|SReparam[Conv1d]] = None,
+        conv_in: Optional[Conv1d|MaskedConv1d|SReparam[Conv1d|MaskedConv1d]] = None,
         tied_ffn: Optional[T5BooruLayerFF] = None,
         tied_self_attn_avg_key_len: Optional[FloatTensor] = None,
         tied_cross_attn_avg_key_len: Optional[FloatTensor] = None,
@@ -1290,39 +1291,41 @@ class T5BooruStack(T5BooruPreTrainedModel):
                 raise ValueError("You have to initialize the model with valid token embeddings")
             inputs_embeds: FloatTensor = self.embed_tokens(input_ids)
             if self.conv_in is not None:
+                # if self.is_decoder:
+                #     if isinstance(self.conv_in, Conv1d):
+                #         conv_in: Conv1d = self.conv_in
+                #     elif isinstance(self.conv_in, SReparam):
+                #         conv_in: Conv1d = self.conv_in.op
+                #     else:
+                #         raise ValueError(f'expected self.conv_in to be Conv1d or SReparam. got "{type(self.conv_in)}"')
+                #     inputs_embeds = conv1d(
+                #         inputs_embeds.mT,
+                #         pad(
+                #             conv_in.weight[:,:,:-1],
+                #             pad=(0, 1),
+                #         ),
+                #         conv_in.bias,
+                #         conv_in.stride,
+                #         conv_in.padding,
+                #         conv_in.dilation,
+                #         conv_in.groups,
+                #     )
+                #     # TODO: share code with SReparam class
+                #     if isinstance(self.conv_in, SReparam):
+                #         if self.conv_in.bias is None:
+                #             quotient: FloatTensor = (self.conv_in.g / self.conv_in.sigma)
+                #             inputs_embeds *= quotient.to(inputs_embeds.dtype)
+                #         else:
+                #             inputs_embeds = torch.addcmul(
+                #                 self.conv_in.bias.to(inputs_embeds.dtype),
+                #                 inputs_embeds,
+                #                 self.conv_in.to(inputs_embeds.dtype),
+                #                 value=(1 / self.conv_in.sigma).to(inputs_embeds.dtype),
+                #             )
+                # else:
                 if self.is_decoder:
-                    if isinstance(self.conv_in, Conv1d):
-                        conv_in: Conv1d = self.conv_in
-                    elif isinstance(self.conv_in, SReparam):
-                        conv_in: Conv1d = self.conv_in.op
-                    else:
-                        raise ValueError(f'expected self.conv_in to be Conv1d or SReparam. got "{type(self.conv_in)}"')
-                    inputs_embeds = conv1d(
-                        inputs_embeds.mT,
-                        pad(
-                            conv_in.weight[:,:,:-1],
-                            pad=(0, 1),
-                        ),
-                        conv_in.bias,
-                        conv_in.stride,
-                        conv_in.padding,
-                        conv_in.dilation,
-                        conv_in.groups,
-                    )
-                    # TODO: share code with SReparam class
-                    if isinstance(self.conv_in, SReparam):
-                        if self.conv_in.bias is None:
-                            quotient: FloatTensor = (self.conv_in.g / self.conv_in.sigma)
-                            inputs_embeds *= quotient.to(inputs_embeds.dtype)
-                        else:
-                            inputs_embeds = torch.addcmul(
-                                self.conv_in.bias.to(inputs_embeds.dtype),
-                                inputs_embeds,
-                                self.conv_in.to(inputs_embeds.dtype),
-                                value=(1 / self.conv_in.sigma).to(inputs_embeds.dtype),
-                            )
-                else:
-                    inputs_embeds = self.conv_in(inputs_embeds.mT)
+                    pass
+                inputs_embeds = self.conv_in(inputs_embeds.mT)
                 inputs_embeds = inputs_embeds.mT
 
         batch_size, seq_length = input_shape
@@ -2029,7 +2032,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
 
     shared: Embedding
     lm_head: Linear|SReparam[Linear]
-    decoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
+    decoder_conv_in: Optional[MaskedConv1d|SReparam[MaskedConv1d]]
     encoder_conv_in: Optional[Conv1d|SReparam[Conv1d]]
     tied_ffn: Optional[T5BooruLayerFF]
 
@@ -2064,11 +2067,11 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             if config.use_sigma_reparam:
                 self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
-            indirection = 'op.' if config.use_sigma_reparam else ''
-            self._tied_weights_keys.extend([
-                f'encoder.tied_conv_in.{indirection}weight',
-                f'encoder.tied_conv_in.bias'
-            ])
+            # indirection = 'op.' if config.use_sigma_reparam else ''
+            # self._tied_weights_keys.extend([
+            #     f'encoder.tied_conv_in.{indirection}weight',
+            #     f'encoder.tied_conv_in.bias'
+            # ])
         else:
             self.encoder_conv_in = None
         
@@ -2076,17 +2079,23 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             out_channels = config.d_model
             assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
             if config.encoder_conv_in and config.tie_conv_in:
-                self.decoder_conv_in = self.encoder_conv_in
+                encoder_conv: Conv1d = self.encoder_conv_in.op if config.use_sigma_reparam else self.encoder_conv_in
+                self.decoder_conv_in = MaskedConv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=encoder_conv.kernel_size, padding=encoder_conv.padding, bias=(encoder_conv.bias is not None), tied_bias=None if encoder_conv.bias is None else encoder_conv.bias.data, tied_weight=encoder_conv.weight.data)
             else:
-                self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
+                self.decoder_conv_in = MaskedConv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
+                tie_kwargs = {
+                    'tied_g': self.encoder_conv_in.g,
+                    'tied_sigma': self.encoder_conv_in.sigma,
+                    'tied_bias': self.encoder_conv_in.bias,
+                } if config.tie_conv_in else {}
+                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1), **tie_kwargs)
 
-            indirection = 'op.' if config.use_sigma_reparam else ''
-            self._tied_weights_keys.extend([
-                f'decoder.tied_conv_in.{indirection}weight',
-                f'decoder.tied_conv_in.bias'
-            ])
+            # indirection = 'op.' if config.use_sigma_reparam else ''
+            # self._tied_weights_keys.extend([
+            #     f'decoder.tied_conv_in.{indirection}weight',
+            #     f'decoder.tied_conv_in.bias'
+            # ])
         else:
             self.decoder_conv_in = None
 
