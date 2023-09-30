@@ -22,6 +22,7 @@ class SReparam(nn.Module, Generic[M]):
     - type hints
     - addcmul fusion
     - register_v_during_construction + init_all_via_trace, to try and improve support for loading saved checkpoints via HF transformers
+    - support for tied sigma, gamma and bias
     """
     op: M
     n_iters: int
@@ -30,8 +31,10 @@ class SReparam(nn.Module, Generic[M]):
     register_v_during_construction: bool
     # gamma, but we can't call it gamma because (sigh):
     # https://github.com/huggingface/transformers/blob/8e3980a290acc6d2f8ea76dba111b9ef0ef00309/src/transformers/modeling_utils.py#L3355
-    g: nn.Parameter
-    bias: Optional[nn.Parameter]
+    # will be a Parameter unless tied
+    g: [nn.Parameter|FloatTensor]
+    bias: Optional[nn.Parameter|FloatTensor]
+    tied: bool
 
     sigma: FloatTensor
     # type hint for (potentially) lateinit buffer
@@ -51,26 +54,38 @@ class SReparam(nn.Module, Generic[M]):
         # by HF transformers load_pretrained() (which loads state_dict entries immediately after
         # construction, without leaving any opportunity to register buffers via delayed-init).
         register_v_during_construction=True,
+        tied_g: Optional[Tensor] = None,
+        tied_sigma: Optional[Tensor] = None,
+        tied_bias: Optional[Tensor] = None,
     ):
         super().__init__()
         self.op = op
         self.n_iters = n_iters
         self.n_iters_init = max(n_iters, n_iters_init)
         self.eps = eps
-        self.g = nn.Parameter(torch.ones(()), requires_grad=learn_gamma)
-        self.bias = nn.Parameter(torch.zeros(bias_shape)) if bias_shape is not None else None
         self.register_v_during_construction = register_v_during_construction
-        if register_v_during_construction:
-            if v_shape is None:
-                if isinstance(op, Linear):
-                    v_shape = (op.in_features,)
-                else:
-                    raise ValueError('you have specified `register_v_during_construction`, but we were unable to infer v_shape from your op (we can only do this for Linear).')
-            self.register_buffer('v', torch.randn(v_shape))
-        self.register_buffer('sigma', torch.ones(()))
+        if tied_g is None:
+            self.tied = False
+            self.g = nn.Parameter(torch.ones(()), requires_grad=learn_gamma)
+            self.bias = nn.Parameter(torch.zeros(bias_shape)) if bias_shape is not None else None
+            if register_v_during_construction:
+                if v_shape is None:
+                    if isinstance(op, Linear):
+                        v_shape = (op.in_features,)
+                    else:
+                        raise ValueError('you have specified `register_v_during_construction`, but we were unable to infer v_shape from your op (we can only do this for Linear).')
+                self.register_buffer('v', torch.randn(v_shape))
+            self.register_buffer('sigma', torch.ones(()))
+        else:
+            self.tied = True
+            assert tied_sigma is not None
+            self.g = tied_g
+            self.sigma = tied_sigma
+            self.bias = tied_bias
 
     @torch.no_grad()
     def update_(self, n_iters: Optional[int] = None) -> None:
+        assert not self.tied, "when tying SReparam instances: only update the primary instance, not other instances that receive references to its buffers."
         n_iters: int = n_iters or self.n_iters
         v: Tensor = self.v
         for _ in range(n_iters):
@@ -84,13 +99,14 @@ class SReparam(nn.Module, Generic[M]):
     @classmethod
     def update_all_(cls, module: nn.Module, n_iters: Optional[int] = None) -> None:
         for child in module.children():
-            if isinstance(child, cls):
+            if isinstance(child, cls) and not child.tied:
                 child.update_(n_iters)
             else:
                 cls.update_all_(child, n_iters)
 
     @torch.no_grad()
     def init_(self, shape: Sequence[int], dtype: torch.dtype, device: torch.device|str) -> None:
+        assert not self.tied, "when tying SReparam instances: only initialize the primary instance, not other instances that receive references to its buffers."
         if hasattr(self, 'v'):
             assert self.register_v_during_construction
             assert self.v.device == device
@@ -112,15 +128,16 @@ class SReparam(nn.Module, Generic[M]):
     def init_all_statically(cls, module: nn.Module) -> None:
         for mod in module.modules():
             if isinstance(mod, SReparam):
-                dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else mod.v.dtype
-                device = mod.v.device
-                mod.init_(mod.n_iters_init, dtype=dtype, device=device)
+                if not mod.tied:
+                    dtype = torch.get_autocast_gpu_dtype() if torch.is_autocast_enabled() else mod.v.dtype
+                    device = mod.v.device
+                    mod.init_(mod.n_iters_init, dtype=dtype, device=device)
 
     def forward(self, x: Tensor) -> Tensor:
         # note: this condition may cost you a graph break if you are using torch.compile().
         # if you are using late-init: prefer to run your init_all_via_trace() *before* torch.compile(),
         # so that the noattr branch never needs to be compiled.
-        if not hasattr(self, 'v'):
+        if not hasattr(self, 'v') and not self.tied:
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
         # TODO: fastpath to fuse hadamards into operation
