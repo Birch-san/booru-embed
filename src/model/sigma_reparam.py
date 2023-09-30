@@ -32,6 +32,7 @@ class SReparam(nn.Module, Generic[M]):
     # https://github.com/huggingface/transformers/blob/8e3980a290acc6d2f8ea76dba111b9ef0ef00309/src/transformers/modeling_utils.py#L3355
     g: nn.Parameter
     bias: Optional[nn.Parameter]
+    heads: Optional[int]
 
     sigma: FloatTensor
     # type hint for (potentially) lateinit buffer
@@ -51,34 +52,44 @@ class SReparam(nn.Module, Generic[M]):
         # by HF transformers load_pretrained() (which loads state_dict entries immediately after
         # construction, without leaving any opportunity to register buffers via delayed-init).
         register_v_during_construction=True,
+        heads: Optional[int] = None,
     ):
         super().__init__()
         self.op = op
         self.n_iters = n_iters
         self.n_iters_init = max(n_iters, n_iters_init)
         self.eps = eps
-        self.g = nn.Parameter(torch.ones(()), requires_grad=learn_gamma)
+        self.g = nn.Parameter(torch.ones(() if heads is None else (heads,)), requires_grad=learn_gamma)
         self.bias = nn.Parameter(torch.zeros(bias_shape)) if bias_shape is not None else None
+        self.heads = heads
+        if heads is not None:
+            assert register_v_during_construction, "you have requested multi-headed SReparam and late-initialized v buffer, but we have not implemented inferring of shape of multi-headed v via tracing. you will have to register_v_during_construction=True for now."
+            assert isinstance(op, Linear), "multi-headed SReparam is only implemented for Linear layers."
+            # assert self.bias is None, "multi-headed SReparam is not implemented for layers with bias"
         self.register_v_during_construction = register_v_during_construction
         if register_v_during_construction:
             if v_shape is None:
                 if isinstance(op, Linear):
-                    v_shape = (op.in_features,)
+                    v_shape = (op.in_features,) if heads is None else (heads, op.in_features)
                 else:
                     raise ValueError('you have specified `register_v_during_construction`, but we were unable to infer v_shape from your op (we can only do this for Linear).')
             self.register_buffer('v', torch.randn(v_shape))
-        self.register_buffer('sigma', torch.ones(()))
+        self.register_buffer('sigma', torch.ones(() if heads is None else (heads,)))
 
     @torch.no_grad()
     def update_(self, n_iters: Optional[int] = None) -> None:
         n_iters: int = n_iters or self.n_iters
         v: Tensor = self.v
+        if self.heads is not None:
+            pass
+        dim: Optional[int] = None if self.heads is None else -1
+        keepdim: bool = dim is not None
         for _ in range(n_iters):
             u: Tensor = self.op(v)
-            u = u / u.norm().clamp_min(self.eps)
+            u = u / u.norm(dim=dim, keepdim=keepdim).clamp_min(self.eps)
             _, v = torch.autograd.functional.vjp(self.op, v, u)
-            v = v / v.norm().clamp_min(self.eps)
-        self.sigma.copy_(torch.sum(u * self.op(v)))
+            v = v / v.norm(dim=dim, keepdim=keepdim).clamp_min(self.eps)
+        self.sigma.copy_(torch.sum(u * self.op(v), dim=dim))
         self.v.copy_(v)
 
     @classmethod
@@ -123,7 +134,21 @@ class SReparam(nn.Module, Generic[M]):
         if not hasattr(self, 'v') and self.training:
             self.init_(x.shape, x.dtype, x.device)
         y: Tensor = self.op(x)
-        # TODO: fastpath to fuse hadamards into operation
-        if self.bias is None:
-            return y * (self.g / self.sigma).to(y.dtype)
-        return torch.addcmul(self.bias.to(y.dtype), y, self.g.to(y.dtype), value=(1 / self.sigma).to(y.dtype))
+        if self.heads is None:
+            g = self.g
+            sigma = self.sigma
+        else:
+            y = y.unflatten(dim=-1, sizes=(self.heads, -1))
+            broadcast_shape = [1] * y.ndim
+            broadcast_shape[-2] = self.heads
+            g = self.g.view(broadcast_shape)
+            sigma = self.sigma.view(broadcast_shape)
+        # it's possible to use torch.addcmul as a fastpath to fuse the hadamard and bias
+        # in fact if we peek at what the underlying op is, we could probably fuse all the way
+        # into that. but there are a lot of combinations to support; hopefully torch.compile does this all for us.
+        y *= (g / sigma).to(y.dtype)
+        if self.heads is not None:
+            y = y.flatten(start_dim=-2)
+        if self.bias is not None:
+            y += self.bias.to(y.dtype)
+        return y

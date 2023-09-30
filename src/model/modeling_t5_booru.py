@@ -419,11 +419,10 @@ class T5BooruAttention(nn.Module):
         self.v = nn.Linear(self.d_model, self.inner_dim, bias=False)
         self.o = nn.Linear(self.inner_dim, self.d_model, bias=False)
 
-        # commented-out because there's a mixed-precision-related error on the backwards pass
         if config.use_sigma_reparam:
-            self.q = SReparam(self.q, **config.s_reparam_config)
-            self.k = SReparam(self.k, **config.s_reparam_config)
-            self.v = SReparam(self.v, **config.s_reparam_config)
+            self.q = SReparam(self.q, heads=config.num_heads, **config.s_reparam_config)
+            self.k = SReparam(self.k, heads=config.num_heads, **config.s_reparam_config)
+            self.v = SReparam(self.v, heads=config.num_heads, **config.s_reparam_config)
             self.o = SReparam(self.o, **config.s_reparam_config)
 
         if self.has_relative_attention_bias:
