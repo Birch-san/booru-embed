@@ -1700,7 +1700,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
             assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
             self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
@@ -1718,7 +1718,7 @@ class T5BooruModel(T5BooruPreTrainedModel):
             else:
                 self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
@@ -2062,7 +2062,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
             self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
@@ -2080,7 +2080,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
             else:
                 self.decoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.decoder_conv_in = SReparam(self.decoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
@@ -2310,7 +2310,7 @@ class T5BooruForMaskedLM(T5BooruPreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         return_dict: Optional[bool] = None,
-        z_loss: Optional[float] = None#, 1e-4
+        z_loss: Optional[float] = 1e-4
     ) -> Union[Tuple[torch.FloatTensor], Seq2SeqLMOutput]:
         r"""
         labels (`torch.LongTensor` of shape `(batch_size,)`, *optional*):
@@ -2592,7 +2592,7 @@ class T5BooruEncoderModel(T5BooruPreTrainedModel):
             assert config.pad_token_id == 0, "we make use of conv1d with 'zeros' padding_mode, under the assumption that pad token will be 0. if you wish to pad with another token, then you will need to set the Conv1d's padding to none, and pad the sequence yourself with the pad token of your choosing."
             self.encoder_conv_in = Conv1d(in_channels=config.d_model, out_channels=out_channels, kernel_size=3, padding=1, bias=not config.use_sigma_reparam)
             if config.use_sigma_reparam:
-                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1))
+                self.encoder_conv_in = SReparam(self.encoder_conv_in, **config.s_reparam_config, bias_shape=(out_channels, 1), v_shape=(1, config.d_model, 1))
 
             indirection = 'op.' if config.use_sigma_reparam else ''
             self._tied_weights_keys.extend([
