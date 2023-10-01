@@ -2,9 +2,11 @@
   "architectures": [
     "T5BooruForMaskedLM"
   ],
-  "cross_attn_avg_key_len_init": 18,
-  "cross_attn_avg_key_len_population_init": 256,
-  "cross_attn_avg_key_len_population_max": 2147483648,
+  "continuation_len_avg": {
+    "avg_key_len_init": 18,
+    "population_init": 256,
+    "population_max": 2147483648
+  },
   "d_ff": 2048,
   "d_kv": 64,
   "d_model": 768,
@@ -36,9 +38,11 @@
     "learn_gamma": true,
     "register_v_during_construction": true
   },
-  "self_attn_avg_key_len_init": 81,
-  "self_attn_avg_key_len_population_init": 5626898,
-  "self_attn_avg_key_len_population_max": 2147483648,
+  "prompt_len_avg": {
+    "avg_key_len_init": 81,
+    "population_init": 5626898,
+    "population_max": 2147483648
+  },
   "sreparam_multi_head": false,
   "tie_conv_in": false,
   "tie_encoder_ffns": true,
