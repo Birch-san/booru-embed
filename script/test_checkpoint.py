@@ -611,7 +611,7 @@ def main():
                 if unfinished_sequences.max() == 0:
                     break
         # [[vocab.tokens[token_ix] for token_ix in caption] for caption in acc_tok]
-        mask_cont_preds: List[Dict[int, List[int]]] = []
+        batch_pred_spans: List[Dict[int, List[int]]] = []
         stop_tokens: Set[int] = {
             vocab.token_to_ix[SpecialToken.EOS.value],
             vocab.token_to_ix[SpecialToken.Pad.value],
@@ -624,19 +624,53 @@ def main():
         dupe_across_spans = 0
         empty_spans = 0
         empty_labels = 0
+        correct_spans = 0
+        incorrect_spans = 0
         top_mask_ixs: ShortTensor = (batch['decoder_input_ids'].where(
             (batch['decoder_input_ids'] >= first_mask_ix) & (batch['decoder_input_ids'] <= last_mask_ix)
         , 0).max(dim=-1, keepdim=True).values-first_mask_ix)
-        for pred, top_mask_ix in zip(acc_tok[:,1:].cpu(), top_mask_ixs.cpu()):
-            mask_cont_pred: Dict[int, List[int]] = {}
+        for pred, top_mask_ix, truth in zip(acc_tok[:,1:].cpu(), top_mask_ixs.cpu(), batch['decoder_input_ids'][:,1:].cpu()):
             next_mask_ix = 0
             current_pred: Optional[List[int]] = None
             all_span_labels: List[List[int]] = []
-            current_span_labels: List[List[int]] = []
             current_span_label: List[int] = []
+            current_span_labels: List[List[int]] = []
+
+            true_spans: Dict[int, List[int]] = {}
+            true_span_labels: Dict[int, List[List[int]]] = {}
+            for tok in truth:
+                tok_: int = tok.item()
+                if tok_ in stop_tokens:
+                    break
+                if tok_ >= first_mask_ix and tok_ <= last_mask_ix:
+                    mask_ix: int = tok_-first_mask_ix
+                    next_mask_ix = mask_ix+1
+                    current_pred = []
+                    true_spans[mask_ix] = current_pred
+                    current_span_label = []
+                    current_span_labels = [current_span_label]
+                    true_span_labels[mask_ix] = current_span_labels
+                elif current_pred is not None:
+                    current_pred.append(tok_)
+                    if tok_ == vocab.token_to_ix[SpecialToken.EdgeOfGeneralLabel.value]:
+                        current_span_label = []
+                        current_span_labels.append(current_span_label)
+                    else:
+                        current_span_label.append(tok_)
+
+            next_mask_ix = 0
+            current_pred = None
+            all_span_labels = []
+            current_span_labels = []
+            current_span_label = []
+
+            pred_spans: Dict[int, List[int]] = {}
+            pred_span_labels: Dict[int, List[List[int]]] = {}
             for tok in pred:
                 tok_: int = tok.item()
                 if tok_ in stop_tokens:
+                    if current_pred is not None and not current_pred:
+                        empty_spans += 1
                     final_mask_ix = next_mask_ix-1
                     if final_mask_ix < top_mask_ix:
                         mask_missing_count += top_mask_ix-final_mask_ix
@@ -647,15 +681,16 @@ def main():
                     mask_ix: int = tok_-first_mask_ix
                     if mask_ix != next_mask_ix:
                         mask_discont_count += 1
-                    if mask_ix in mask_cont_pred:
+                    if mask_ix in pred_spans:
                         mask_dupe_count += 1
                     if current_pred is not None and not current_pred:
                         empty_spans += 1
                     next_mask_ix = mask_ix+1
                     current_pred = []
-                    mask_cont_pred[mask_ix] = current_pred
-                    current_span_labels = []
+                    pred_spans[mask_ix] = current_pred
                     current_span_label = []
+                    current_span_labels = [current_span_label]
+                    pred_span_labels[mask_ix] = current_span_labels
                 elif current_pred is not None:
                     current_pred.append(tok_)
                     if tok_ == vocab.token_to_ix[SpecialToken.EdgeOfGeneralLabel.value]:
@@ -667,15 +702,26 @@ def main():
                             if current_span_label == label:
                                 dupe_across_spans += 1
                                 break
-                        if current_span_labels and not current_span_labels[-1] and not current_span_label:
+                        if len(current_span_labels)>1 and not current_span_labels[-1] and not current_span_label:
                             empty_labels += 1
+                        current_span_label = []
                         all_span_labels.append(current_span_label)
                         current_span_labels.append(current_span_label)
-                        # deliberately making new array instead of clearing
-                        current_span_label = []
                     else:
                         current_span_label.append(tok_)
-            mask_cont_preds.append(mask_cont_pred)
+            batch_pred_spans.append(pred_spans)
+            
+            for mask_ix, true_span in true_spans.items():
+                if mask_ix in pred_spans:
+                    pred_span: List[int] = pred_spans[mask_ix]
+                    if pred_span == true_span:
+                        correct_spans += 1
+                    else:
+                        incorrect_spans += 1
+                else:
+                    continue
+                true_labels: List[List[int]] = true_span_labels[mask_ix]
+            pass
         pass
     pass
 
