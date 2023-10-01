@@ -108,6 +108,7 @@ class T5BooruConfig(PretrainedConfig):
         use_sigma_reparam=False,
         use_attn_pre_ln=False,
         use_attn_post_ln=True,
+        fix_embed_weight_init=True,
         fix_lm_head_weight_init=True,
         use_cache=True,
         pad_vocab_to_multiple=8,
@@ -153,6 +154,7 @@ class T5BooruConfig(PretrainedConfig):
         self.continuation_len_avg = continuation_len_avg
         self.use_attn_pre_ln = use_attn_pre_ln
         self.use_attn_post_ln = use_attn_post_ln
+        self.fix_embed_weight_init = fix_embed_weight_init
         self.fix_lm_head_weight_init = fix_lm_head_weight_init
         self.use_cache = use_cache
 
