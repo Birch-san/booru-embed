@@ -81,6 +81,7 @@ from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
 from src.trainer_callbacks.train_duration_callback import TrainDurationCallback
 from src.trainer_callbacks.sreparam_callback import SReparamCallback
+from src.trainer_callbacks.log_every_n_steps_callback import LogEveryNStepsCallback
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
 
@@ -696,10 +697,14 @@ def main():
 
     log_every_n_steps=my_training_args.log_every_n_steps
     callbacks: List[TrainerCallback] = [
-        FlopsCallback(log_every_n_steps=log_every_n_steps),
+        LogEveryNStepsCallback(log_every_n_steps=log_every_n_steps),
         MemoryUsageCallback(nvml_service=nvml_service),
         TrainDurationCallback(),
     ]
+    if my_training_args.measure_flops:
+        callbacks.insert(0, FlopsCallback(log_every_n_steps=log_every_n_steps))
+        if my_training_args.log_flops:
+            flops_logger.setLevel(INFO)
     if not model_args.actual_t5:
         assert isinstance(config, T5BooruConfig)
         if config.use_sigma_reparam:

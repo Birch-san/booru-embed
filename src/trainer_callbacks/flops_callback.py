@@ -12,7 +12,6 @@ FlopMetrics = TypedDict("FlopMetrics", {
 })
 
 class FlopsCallback(TrainerCallback):
-  log_every_n_steps: int
   train_begin: Optional[float] = None
   prev_total_flos = 0
   last_log_tic: Optional[float] = 0
@@ -22,15 +21,6 @@ class FlopsCallback(TrainerCallback):
     'perf/total_flos': 0.,
     'perf/flops': 0.,
   }
-
-  def __init__(self, log_every_n_steps=0) -> None:
-    super().__init__()
-    self.log_every_n_steps = log_every_n_steps
-
-  def on_step_begin(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
-    if state.global_step % self.log_every_n_steps == 0:
-      return TrainerControl(should_log=True)
-    return control
   
   def on_log(self, args: TrainingArguments, state: TrainerState, control: TrainerControl, **kwargs):
     now: float = perf_counter()
