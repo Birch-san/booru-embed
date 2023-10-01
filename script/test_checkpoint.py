@@ -255,7 +255,8 @@ def main():
     with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
     if model_args.actual_t5:
-        config.vocab_size = len(vocab.tokens)
+        if 'google/' not in model_args.model_name_or_path:
+            config.vocab_size = len(vocab.tokens)
     else:
         assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
         if config.pad_vocab_to_multiple:
