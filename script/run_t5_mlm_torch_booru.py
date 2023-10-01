@@ -30,7 +30,7 @@ from pathlib import Path
 import re
 import sys
 from dataclasses import dataclass, field
-from typing import Optional, Dict, List, Literal
+from typing import Optional, Dict, List, Literal, Iterable
 import numpy as np
 from numpy.typing import NDArray
 from functools import partial
@@ -38,9 +38,12 @@ import torch
 from torch import LongTensor
 from torch.optim import Optimizer, SGD
 from torch.optim.lr_scheduler import LambdaLR
+from torch.utils.data.dataloader import DataLoader
+from torch.utils.data.sampler import RandomSampler
 from torchlars import LARS
 from itertools import pairwise
 from logging import INFO
+from contextlib import nullcontext
 
 import datasets
 import evaluate
@@ -50,6 +53,7 @@ import transformers
 from transformers import (
     CONFIG_MAPPING,
     MODEL_FOR_MASKED_LM_MAPPING,
+    GenerationConfig,
     HfArgumentParser,
     T5Tokenizer,
     T5ForConditionalGeneration,
@@ -81,9 +85,11 @@ from src.trainer_callbacks.flops_callback import FlopsCallback, logger as flops_
 from src.trainer_callbacks.memory_usage_callback import MemoryUsageCallback, logger as memory_usage_logger
 from src.trainer_callbacks.train_duration_callback import TrainDurationCallback
 from src.trainer_callbacks.sreparam_callback import SReparamCallback
+from src.trainer_callbacks.gen_callback import GenerationCallback
 from src.trainer_callbacks.log_every_n_steps_callback import LogEveryNStepsCallback
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
+from src.booru_collator import BooruBatchData
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -274,9 +280,12 @@ class SysArguments:
 class MyTrainingArguments:
     use_lars: bool = field(default=False, metadata={"help": "wrap optimizer in LARS"})
     sgd_momentum: float = field(default=0, metadata={"help": "momentum for SGD optimizer, if used"})
-    log_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
+    measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
+    log_flops: bool = field(default=False, metadata={"help": 'Prints to console the measured FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     log_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
-    log_every_n_steps: int = field(default=50, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
+    log_every_n_steps: int = field(default=5, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
+    gen_every_n_steps: Optional[int] = field(default=None, metadata={"help": "Trainer callback to perform in-run inference on the model"})
+    per_device_gen_batch_size: int = field(default=8, metadata={"help": "Trainer callback to perform in-run inference on the model"})
 
 def main():
     # See all possible arguments in src/transformers/training_args.py
@@ -708,10 +717,33 @@ def main():
     if not model_args.actual_t5:
         assert isinstance(config, T5BooruConfig)
         if config.use_sigma_reparam:
-            amp_context = get_amp_context(training_args)
+            amp_context: torch.cuda.amp.autocast | nullcontext = get_amp_context(training_args)
             callbacks.insert(0, SReparamCallback(amp_context=amp_context))
-    if my_training_args.log_flops:
-        flops_logger.setLevel(INFO)
+    if my_training_args.gen_every_n_steps:
+        test_dataloader = DataLoader(
+            test_dataset,
+            collate_fn=data_collator,
+            batch_size=my_training_args.per_device_gen_batch_size,
+            num_workers=0,
+            drop_last=False,
+            pin_memory=True,
+            sampler=RandomSampler(test_dataset),
+        )
+        batches: Iterable[BooruBatchData] = test_dataloader
+        amp_context: torch.cuda.amp.autocast | nullcontext = get_amp_context(training_args)
+        callbacks.append(GenerationCallback(
+            vocab=vocab,
+            batches=batches,
+            generation_config=GenerationConfig(
+                max_new_tokens=20,
+                decoder_start_token_id=config.decoder_start_token_id,
+                eos_token_id=config.eos_token_id,
+                pad_token_id=config.pad_token_id,
+            ),
+            report_to_wandb=training_args.report_to and 'wandb' in training_args.report_to,
+            generate_steps=my_training_args.gen_every_n_steps,
+            amp_context=amp_context,
+        ))
     if my_training_args.log_memory:
         memory_usage_logger.setLevel(INFO)
 
@@ -722,7 +754,7 @@ def main():
         args=training_args,
         callbacks=callbacks,
         train_dataset=train_dataset if training_args.do_train else None,
-        eval_dataset=eval_dataset if training_args.do_eval else None,
+        eval_dataset=test_dataset if training_args.do_eval else None,
         optimizers=optimizer_and_scheduler,
         # tokenizer=tokenizer,
         # tokenizer=tokenize_function,
