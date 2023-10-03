@@ -48,6 +48,7 @@ class CosineAnnealingWarmRestartsDecayWarmup(CosineAnnealingWarmRestartsDecay):
       https://arxiv.org/abs/1608.03983
   """
   warmup: int
+  warmup_start_factor: int
   _last_epoch: int
   _get_lr_called_within_step: bool
 
@@ -56,6 +57,7 @@ class CosineAnnealingWarmRestartsDecayWarmup(CosineAnnealingWarmRestartsDecay):
     optimizer: Optimizer,
     T_0: int,
     warmup: int,
+    warmup_start_factor: float,
     T_mult=1,
     eta_min=0,
     last_epoch=-1,
@@ -63,13 +65,14 @@ class CosineAnnealingWarmRestartsDecayWarmup(CosineAnnealingWarmRestartsDecay):
     decay=1,
   ):
     self.warmup = warmup
+    self.warmup_start_factor = warmup_start_factor
     self._last_epoch = last_epoch
     super().__init__(
       optimizer,
       T_0,
       T_mult=T_mult,
       eta_min=eta_min,
-      last_epoch=last_epoch,
+      last_epoch=max(last_epoch-warmup, -1),
       verbose=verbose,
       decay=decay,
     )
@@ -98,7 +101,7 @@ class CosineAnnealingWarmRestartsDecayWarmup(CosineAnnealingWarmRestartsDecay):
                       "please use `get_last_lr()`.", UserWarning)
     
     if self._last_epoch < self.warmup:
-      return [base_lr * (self.eta_min + (1-self.eta_min)*self._last_epoch/self.warmup)
-            for base_lr in self.base_lrs]
+      return [base_lr * (self.warmup_start_factor + (1 - self.warmup_start_factor) * self._last_epoch / self.warmup)
+              for base_lr in self.base_lrs]
 
     return super().get_lr()
