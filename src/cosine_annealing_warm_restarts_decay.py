@@ -1,5 +1,5 @@
 import math
-from typing import Optional
+from typing import Optional, List
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 # https://stackoverflow.com/a/73747249/5257399
@@ -31,16 +31,21 @@ class CosineAnnealingWarmRestartsDecay(CosineAnnealingWarmRestarts):
   .. _SGDR\: Stochastic Gradient Descent with Warm Restarts:
       https://arxiv.org/abs/1608.03983
   """
+  decay: float
+  _resume_handled: bool
+  initial_lrs: List[float]
   def __init__(
     self,
     optimizer,
     T_0: int,
     T_mult=1,
-    eta_min=0,
-    last_epoch=-1,
+    eta_min=0.,
+    last_epoch = -1,
     verbose=False,
-    decay=1,
+    decay=1.,
   ):
+    self.decay = decay
+    self._resume_handled = False
     super().__init__(
       optimizer,
       T_0,
@@ -49,7 +54,6 @@ class CosineAnnealingWarmRestartsDecay(CosineAnnealingWarmRestarts):
       last_epoch=last_epoch,
       verbose=verbose,
     )
-    self.decay = decay
     self.initial_lrs = self.base_lrs
   
   def step(self, epoch: Optional[int] = None):
@@ -71,4 +75,14 @@ class CosineAnnealingWarmRestartsDecay(CosineAnnealingWarmRestarts):
       
       self.base_lrs = [initial_lrs * (self.decay**n) for initial_lrs in self.initial_lrs]
 
+    # CosineAnnealingWarmRestarts has a bug with resuming for values of last_epoch greater than T_0*(T_mult+1).
+    # because it used an `if` rather than a `while`.
+    # we can run the while loop here for it.
+    if self.last_epoch >= 0 and not self._resume_handled:
+      self.T_cur = self.T_cur + 1
+      while self.T_cur >= self.T_i:
+        self.T_cur = self.T_cur - self.T_i
+        self.T_i = self.T_i * self.T_mult
+      self.T_cur = self.T_cur - 1
+      self._resume_handled = True
     super().step(epoch)
