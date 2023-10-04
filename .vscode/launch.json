@@ -292,6 +292,13 @@
       "request": "launch",
       "module": "script.loss_bench",
       "justMyCode": false
+    },
+    {
+      "name": "Python: Attn bench",
+      "type": "python",
+      "request": "launch",
+      "module": "script.attn_bench",
+      "justMyCode": false
     }
   ]
 }
