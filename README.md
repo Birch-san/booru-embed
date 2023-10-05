@@ -77,7 +77,7 @@ head -n 2 bq-results-20230520-201605-1684613827694.csv | csv2tsv
 
 Then we can use awk to count tag occurrences, and print a sorted list.  
 
-### Counting word prevalance
+### Counting word prevalence
 
 Modify the `*.csv` wildcard in `word-prevalence.sh` to be in the directory where you saved out Danbooru CSVs, then run:
 
