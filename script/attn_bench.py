@@ -91,7 +91,6 @@ def cutlass_fwd_flop(
     custom_mask_type,
   )
 
-# I'm not sure what information is conveyed by out_shape, so here's my best guess
 class CutlassBwdOutShape(NamedTuple):
   # b t h c
   grad_query: Size
