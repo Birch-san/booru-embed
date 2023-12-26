@@ -1,0 +1,55 @@
+{
+  "architectures": [
+    "T5BooruForMaskedLM"
+  ],
+  "continuation_len_avg": {
+    "avg_key_len_init": 18,
+    "population_init": 256,
+    "population_max": 2147483648
+  },
+  "d_ff": 1024,
+  "d_kv": 64,
+  "d_model": 512,
+  "decoder_conv_in": true,
+  "decoder_mlp": true,
+  "decoder_start_token_id": 0,
+  "dropout_rate": 0.1,
+  "encoder_conv_in": true,
+  "eos_token_id": 1,
+  "feed_forward_proj": "gated-gelu",
+  "fix_embed_weight_init": true,
+  "fix_lm_head_weight_init": true,
+  "initializer_factor": 1.0,
+  "is_encoder_decoder": true,
+  "label_ignore_index": -100,
+  "layer_norm_epsilon": 1e-06,
+  "max_ctx_len": 256,
+  "model_type": "t5",
+  "num_decoder_layers": 8,
+  "num_heads": 6,
+  "num_layers": 8,
+  "output_past": true,
+  "pad_token_id": 0,
+  "prompt_len_avg": {
+    "avg_key_len_init": 81,
+    "population_init": 5626898,
+    "population_max": 2147483648
+  },
+  "relative_attention_num_buckets": 32,
+  "s_reparam_config": {
+    "n_iters": 1,
+    "n_iters_init": 15,
+    "eps": 1e-12,
+    "learn_gamma": true,
+    "register_v_during_construction": true
+  },
+  "sreparam_multi_head": true,
+  "tie_conv_in": false,
+  "tie_encoder_ffns": false,
+  "tie_word_embeddings": false,
+  "use_sigma_reparam": true,
+  "use_attn_pre_ln": false,
+  "use_attn_post_ln": true,
+  "vocab_size_nominal": 32169,
+  "pad_vocab_to_multiple": 8
+}

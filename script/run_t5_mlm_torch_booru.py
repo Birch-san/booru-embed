@@ -74,7 +74,14 @@ from src.create_schedule import get_inverse_sqrt_schedule
 from src.optimizer_and_scheduler import OptimizerAndScheduler
 from src.get_amp_context import get_amp_context
 from src.vocab import Vocab
-from src.model.modeling_t5_booru import T5BooruForMaskedLM
+# v1
+# - invested a lot in sigma-reparam, but:
+#   - was experimental/unofficial (whereas Apple have now released an official version)
+#   - hadn't considered weight tying, so would've been redoing power iteration
+#   - wasn't enforcing float32 precision for power iteration, which is apparently required
+# - was complicated by xformers support for accelerating attention bias, when really we should just use RoPE + flash attn
+from src.model.modeling_t5_booru import T5BooruForMaskedLM as T5Booru1ForMaskedLM
+from src.model2.modeling_t5_booru import T5BooruForMaskedLM as T5Booru2ForMaskedLM
 from src.model.configuration_t5_booru import T5BooruConfig
 from src.booru_special_tokens import SpecialToken, make_mask_token, make_vocab_pad_token
 from src.booru_collator_t5_mlm import BooruDataCollatorForT5MLM
@@ -187,6 +194,7 @@ class ModelArguments:
         },
     )
     actual_t5: bool = field(default=False, metadata={"help": 'original gangsta T5'})
+    booru_ver: str = field(default='v2', choices=['v1', 'v2'], metadata={"help": 'which version of the modeling_t5_booru code to use'})
 
     def __post_init__(self):
         if self.config_overrides is not None and (self.config_name is not None or self.model_name_or_path is not None):
@@ -467,22 +475,37 @@ def main():
             'low_cpu_mem_usage': model_args.low_cpu_mem_usage,
         }
         if model_args.actual_t5:
-            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
+            model: T5ForConditionalGeneration = T5ForConditionalGeneration.from_pretrained(
                 model_args.model_name_or_path,
                 from_tf=bool(".ckpt" in model_args.model_name_or_path),
                 **common_kwargs,
             )
         else:
-            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5BooruForMaskedLM.from_pretrained(
-                model_args.model_name_or_path,
-                **common_kwargs,
-            )
+            match(model_args.booru_ver):
+                case 'v1':
+                    model: T5Booru1ForMaskedLM = T5Booru1ForMaskedLM.from_pretrained(
+                        model_args.model_name_or_path,
+                        **common_kwargs,
+                    )
+                case 'v2':
+                    model: T5Booru2ForMaskedLM = T5Booru2ForMaskedLM.from_pretrained(
+                        model_args.model_name_or_path,
+                        **common_kwargs,
+                    )
+                case _:
+                    raise ValueError(f"Unimplemented booru_ver '{model_args.booru_ver}'")
     else:
         logger.info("Training new model from scratch")
         if model_args.actual_t5:
-            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5ForConditionalGeneration(config)
+            model: T5ForConditionalGeneration = T5ForConditionalGeneration(config)
         else:
-            model: T5BooruForMaskedLM | T5ForConditionalGeneration = T5BooruForMaskedLM(config)
+            match(model_args.booru_ver):
+                case 'v1':
+                    model: T5Booru1ForMaskedLM = T5Booru1ForMaskedLM(config)
+                case 'v2':
+                    model: T5Booru2ForMaskedLM = T5Booru2ForMaskedLM(config)
+                case _:
+                    raise ValueError(f"Unimplemented booru_ver '{model_args.booru_ver}'")
     
     if model_args.actual_t5:
         assert not model_args.xformers, "xformers support not implemented for OG T5"
