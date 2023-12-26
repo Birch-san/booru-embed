@@ -711,7 +711,7 @@ def main():
         TrainDurationCallback(),
     ]
     if my_training_args.measure_flops:
-        callbacks.insert(0, FlopsCallback(log_every_n_steps=log_every_n_steps))
+        callbacks.insert(0, FlopsCallback(add_xformers_mappings=model_args.xformers))
         if my_training_args.log_flops:
             flops_logger.setLevel(INFO)
     if not model_args.actual_t5:
