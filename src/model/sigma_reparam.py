@@ -10,6 +10,7 @@ from typing import Optional, TypeAlias, Sequence, Generic, TypeVar
 SReparamSupportedModule: TypeAlias = Linear | Conv1d | Conv2d
 M = TypeVar("M", bound=SReparamSupportedModule)
 
+# TODO: consider replacing with Apple's https://github.com/apple/ml-sigma-reparam
 class SReparam(nn.Module, Generic[M]):
     """
     σReparam implementation by Katherine Crowson
@@ -76,6 +77,7 @@ class SReparam(nn.Module, Generic[M]):
             self.register_buffer('v', torch.randn(v_shape))
         self.register_buffer('sigma', torch.ones(() if heads is None else (heads,)))
 
+    # TODO: power iteration should be done in fp32 (even tf32 isn't enough)
     @torch.no_grad()
     def update_(self, n_iters: Optional[int] = None) -> None:
         n_iters: int = n_iters or self.n_iters
@@ -96,6 +98,7 @@ class SReparam(nn.Module, Generic[M]):
     def update_all_(cls, module: nn.Module, n_iters: Optional[int] = None) -> None:
         for child in module.children():
             if isinstance(child, cls):
+                # TODO: avoid doubly-updating tied layers!
                 child.update_(n_iters)
             else:
                 cls.update_all_(child, n_iters)
