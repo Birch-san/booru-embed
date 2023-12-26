@@ -617,6 +617,9 @@ class T5BooruAttention(nn.Module):
                 # sdp:      (batch_size, n_heads, seq_len, dim_per_head)
                 # xformers: (batch_size, seq_len, n_heads, dim_per_head)
                 hidden_states = shape(proj_layer(key_value_states))
+            else:
+                # inference-only (after prefill; you now have a cache)
+                pass
 
             if past_key_value is not None:
                 if key_value_states is None:
@@ -625,6 +628,7 @@ class T5BooruAttention(nn.Module):
                     # xformers: (batch_size, seq_len, n_heads, dim_per_head)
                     hidden_states = torch.cat([past_key_value, hidden_states], dim=1 if self.use_xformers_attn else 2)
                 elif past_key_value.shape[1 if self.use_xformers_attn else 2] != key_value_states.shape[1]:
+                    # we don't use this code path ourselves
                     # checking that the `sequence_length` of the `past_key_value` is the same as
                     # the provided `key_value_states` to support prefix tuning
                     # cross-attn
