@@ -299,6 +299,13 @@
       "request": "launch",
       "module": "script.attn_bench",
       "justMyCode": false
+    },
+    {
+      "name": "Python: Pack dataset",
+      "type": "python",
+      "request": "launch",
+      "module": "script.pack_dataset",
+      "justMyCode": false
     }
   ]
 }
