@@ -6,8 +6,14 @@
 """Non-Negative least squares histogram-packing."""
 import time
 import numpy as np
-from scipy import optimize, stats
+from scipy import optimize
 from functools import lru_cache
+from typing import NamedTuple, List
+from numpy.typing import NDArray
+
+class Packing(NamedTuple):
+    strategy_set: List[List[int]]
+    strategy_repeat_count: NDArray
 
 
 def get_packing_matrix(strategy_set, max_sequence_length):
@@ -20,9 +26,9 @@ def get_packing_matrix(strategy_set, max_sequence_length):
 
 
 @lru_cache(maxsize=None)
-def get_packing_strategies(start_length, minimum_increment, target_length, depth):
+def get_packing_strategies(start_length: int, minimum_increment: int, target_length: int, depth: int) -> List[List[int]]:
     gap = target_length - start_length
-    strategies = []
+    strategies: List[List[int]] = []
     # Complete the packing with exactly 1 number
     if depth == 1:
         if gap >= minimum_increment:
@@ -41,7 +47,7 @@ def get_packing_strategies(start_length, minimum_increment, target_length, depth
     return strategies
 
 
-def pack_using_nnlshp(histogram, max_sequence_length, max_sequences_per_pack):
+def pack_using_nnlshp(histogram: NDArray, max_sequence_length: int, max_sequences_per_pack: int) -> Packing:
     # List all unique ways of packing to the desired maximum sequence length
     strategy_set = get_packing_strategies(0, 1, max_sequence_length, max_sequences_per_pack)
     # Get the packing matrix corresponding to this list of packing strategies
@@ -82,4 +88,4 @@ def pack_using_nnlshp(histogram, max_sequence_length, max_sequences_per_pack):
           f"Achieved speed-up over un-packed dataset: {old_number_of_samples/new_number_of_samples:3.5f}\n"
           f"Runtime: Packed {old_number_of_samples} sequences in {duration:3.3f} seconds.")
 
-    return strategy_set, strategy_repeat_count
+    return Packing(strategy_set, strategy_repeat_count)

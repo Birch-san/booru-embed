@@ -128,7 +128,6 @@ def main():
         lens: LongTensor = torch.as_tensor(lengths, device=device, dtype=torch.long)
         histogram: LongTensor = torch.histc(lens, bins=256, min=0, max=255)
         # max_sequences_per_pack=4 worked fine, =8 exceeded my RAM
-        packed = pack_using_nnlshp(histogram.cpu().numpy(), max_sequence_length=data_args.max_seq_length, max_sequences_per_pack=4)
         samples_to_take = lengths.shape[0] if sample_limit_per_bucket is None else min(lengths.shape[0], sample_limit_per_bucket)
 
         lengths = lengths[:samples_to_take]
@@ -137,6 +136,9 @@ def main():
         test_indices: NDArray = get_indices(lengths[:train_start_ix])
         train_indices: NDArray = get_indices(lengths[train_start_ix:samples_to_take])
         del lengths
+        
+
+        strategy_set, strategy_repeat_count = pack_using_nnlshp(histogram.cpu().numpy(), max_sequence_length=data_args.max_seq_length, max_sequences_per_pack=4)
 
         bucket_samples_test[bucket_value] = BucketContent(
             values = values[:test_indices[-1]],
