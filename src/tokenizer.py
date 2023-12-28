@@ -26,6 +26,7 @@ def make_tsv_record_to_token_ids(
   statistics: Optional[Statistics] = None,
 ) -> TsvRecordToTokenIds:
   # micro-optimization to avoid dict lookup of tokens we'll be using often
+  bos_token_id: int = vocab.token_to_ix[SpecialToken.BOS.value]
   eos_token_id: int = vocab.token_to_ix[SpecialToken.EOS.value]
   cnv_token_id: int = vocab.token_to_ix[SpecialToken.ConvPad.value]
   char_token_id: int = vocab.token_to_ix[SpecialToken.CharacterStart.value]
@@ -60,7 +61,7 @@ def make_tsv_record_to_token_ids(
 
     general_token_ids_len: int = sum((len(x) for x in general_labels)) + len(general_labels)
     # compute length first, as a fast-path to discard long prompts before we commit to the cost of shuffling
-    token_len: int = 7 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
+    token_len: int = 8 + len(char_token_ids) + len(cpy_token_ids) + len(art_token_ids) + general_token_ids_len + len(meta_token_ids)
     if token_len > max_tokens:
       # I mean we could drop labels to salvage it, but probably too many subjects are being portrayed to get a good embedding anyway
       return None
@@ -76,6 +77,7 @@ def make_tsv_record_to_token_ids(
     assert len(general_token_ids) == general_token_ids_len
 
     token_ixs: List[int] = [
+      bos_token_id,
       # cnv_token_id, # commenting-out for now whilst we figure out how conv tokens should interact with collator and MLM objective
       rating_token_ids[rating],
       char_token_id,

@@ -4,6 +4,8 @@ from typing import List, Literal, TypeAlias, Generator
 class SpecialToken(Enum):
   # if PAD is the 0-token, it might be easier to eyeball where padding is
   Pad = '<pad>'
+  # in order to be able to employ chunking, we use a per-sequence BOS but a single EOS to delimit prompt from continuation
+  BOS = '<s>'
   EOS = '</s>'
   Unknown = '<unk>'
   ConvPad = '<cpad>'
