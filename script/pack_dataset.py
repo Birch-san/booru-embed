@@ -122,11 +122,13 @@ def main():
     sample_limit_per_bucket: Optional[int] = None if data_args.max_train_samples is None else (
         int(data_args.max_train_samples/(1-train_test_split))
     )
+    # let's add BOS to each of these
+    added_tokens = 1
     for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
         values: NDArray = np.load(join(bucket_dir, 'values.npy'))
         lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
-        lens: LongTensor = torch.as_tensor(lengths, device=device, dtype=torch.long)
-        histogram: LongTensor = torch.histc(lens, bins=256, min=0, max=255)
+        lens: LongTensor = torch.as_tensor(lengths, device=device, dtype=torch.long) + added_tokens
+        histogram: LongTensor = torch.histc(lens, bins=256, min=added_tokens, max=255 + added_tokens)
         # max_sequences_per_pack=4 worked fine, =8 exceeded my RAM
         samples_to_take = lengths.shape[0] if sample_limit_per_bucket is None else min(lengths.shape[0], sample_limit_per_bucket)
 
@@ -136,9 +138,28 @@ def main():
         test_indices: NDArray = get_indices(lengths[:train_start_ix])
         train_indices: NDArray = get_indices(lengths[train_start_ix:samples_to_take])
         del lengths
-        
 
-        strategy_set, strategy_repeat_count = pack_using_nnlshp(histogram.cpu().numpy(), max_sequence_length=data_args.max_seq_length, max_sequences_per_pack=4)
+        # TODO:
+        # pull the new BOS tokenizer and dataset
+        # consider each strategy
+        #   [[1, 255], [2, 254], [3, 253], ..]
+        # and each strategy count
+        #   np.array([blah, blah, blah])
+        # create a BooruDataset-like ragged-array accessor?
+        # create a Dict[int, List[int]]
+        #   bucket_len -> indices at which sequences with such lengths can be found
+        # hmm so basically group indices by lengths? not that there'll be any way to do that..
+        # allocate a [strategy_repeat_count.cumsum(), data_args.max_seq_length] buffer, inited with PAD token
+        # allocate a [strategy_repeat_count.cumsum(), max_sequences_per_pack] buffer, inited with 0
+        #   or maybe we just want a strategy index, [strategy_repeat_count.cumsum(), 1]
+        # then iterate through each zip(strategy, repeat_count)
+        # within that, iterate through each range(repeat_count)
+        # lookup sequences of the lengths you need, from the dict
+        # build samples by concatenating each such sequence. having padding left at the end is fine
+        # assign each such sample into our buffer
+        # and write into max_sequences_per_pack the lengths from the strategy?
+        # or maybe we just want a strategy index? and knowledge of what max_sequences_per_pack and max_sequence_length were set to
+        strategy_set, strategy_repeat_count = pack_using_nnlshp(histogram.cpu().numpy(), max_sequence_length=data_args.max_seq_length, max_sequences_per_pack=2)
 
         bucket_samples_test[bucket_value] = BucketContent(
             values = values[:test_indices[-1]],
