@@ -1067,59 +1067,6 @@ class T5BooruPreTrainedModel(PreTrainedModel):
         }
         return dummy_inputs
 
-    def _init_weights(self, module):
-        """Initialize the weights"""
-        factor = self.config.initializer_factor  # Used for testing weights initialization
-        if isinstance(module, T5BooruLayerNorm):
-            module.weight.data.fill_(factor * 1.0)
-        elif isinstance(module, (T5BooruModel, T5BooruForMaskedLM, T5BooruEncoderModel)):
-            # Mesh TensorFlow embeddings initialization
-            # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L1624
-            # prefer .05 (Mesh TensorFlow default)
-            # https://github.com/huggingface/transformers/pull/26441#issuecomment-1741865284
-            # note: there is some doubt over this
-            # https://github.com/huggingface/transformers/pull/26441#issuecomment-1741877125
-            module.shared.weight.data.normal_(mean=0.0, std=factor * (.05 if self.config.fix_embed_weight_init else 1.))
-            if hasattr(module, "lm_head") and not self.config.tie_word_embeddings:
-                # prefer dim ** -.5 (initialize like the other Linear layers)
-                # https://github.com/huggingface/transformers/pull/26441
-                unwrap_sreparam(module.lm_head).weight.data.normal_(mean=0.0, std=factor * (self.config.d_model ** -.5 if self.config.fix_lm_head_weight_init else 1.))
-            if hasattr(module, "qa_outputs"):
-                module.qa_outputs.weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
-                module.qa_outputs.bias.data.zero_()
-        elif isinstance(module, T5BooruDenseActDense):
-            # Mesh TensorFlow FF initialization
-            # See https://github.com/tensorflow/mesh/blob/master/mesh_tensorflow/transformer/transformer_layers.py#L56
-            # and https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/layers.py#L89
-            unwrap_sreparam(module.wi).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
-            if hasattr(module.wi, "bias") and module.wi.bias is not None:
-                module.wi.bias.data.zero_()
-            unwrap_sreparam(module.wo).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
-            if hasattr(module.wo, "bias") and module.wo.bias is not None:
-                module.wo.bias.data.zero_()
-        elif isinstance(module, T5BooruDenseGatedActDense):
-            unwrap_sreparam(module.wi_0).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
-            if hasattr(module.wi_0, "bias") and module.wi_0.bias is not None:
-                module.wi_0.bias.data.zero_()
-            unwrap_sreparam(module.wi_1).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_model) ** -0.5))
-            if hasattr(module.wi_1, "bias") and module.wi_1.bias is not None:
-                module.wi_1.bias.data.zero_()
-            unwrap_sreparam(module.wo).weight.data.normal_(mean=0.0, std=factor * ((self.config.d_ff) ** -0.5))
-            if hasattr(module.wo, "bias") and module.wo.bias is not None:
-                module.wo.bias.data.zero_()
-        elif isinstance(module, T5BooruAttention):
-            # Mesh TensorFlow attention initialization to avoid scaling before softmax
-            # See https://github.com/tensorflow/mesh/blob/fa19d69eafc9a482aff0b59ddd96b025c0cb207d/mesh_tensorflow/transformer/attention.py#L136
-            d_model = self.config.d_model
-            key_value_proj_dim = self.config.d_kv
-            n_heads = self.config.num_heads
-            unwrap_sreparam(module.q).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            unwrap_sreparam(module.k).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            unwrap_sreparam(module.v).weight.data.normal_(mean=0.0, std=factor * (d_model**-0.5))
-            unwrap_sreparam(module.o).weight.data.normal_(mean=0.0, std=factor * ((n_heads * key_value_proj_dim) ** -0.5))
-            if module.has_relative_attention_bias:
-                module.relative_attention_bias.weight.data.normal_(mean=0.0, std=factor * ((d_model) ** -0.5))
-
     def _set_gradient_checkpointing(self, module, value=False):
         if isinstance(module, (T5BooruAttention, T5BooruStack)):
             module.gradient_checkpointing = value
