@@ -6,35 +6,35 @@
   "configurations": [
     {
       "name": "Python: TSV Tokenizer",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.tsv_tokenizer",
       "justMyCode": true
     },
     {
       "name": "Python: TSV Bucketer",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.tsv_bucketer",
       "justMyCode": true
     },
     {
       "name": "Python: Make tokenizer",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.make_tokenizer",
       "justMyCode": true
     },
     {
       "name": "Python: Read bucket",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.read_bucket",
       "justMyCode": true
     },
     {
       "name": "Python: T5 MLM Flax",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_t5_mlm_flax",
       "justMyCode": false,
@@ -63,7 +63,7 @@
     },
     {
       "name": "Python: T5 MLM Torch",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_t5_mlm_torch",
       "justMyCode": false,
@@ -92,7 +92,7 @@
     },
     {
       "name": "Python: MLM Torch",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_mlm_torch",
       "justMyCode": false,
@@ -111,7 +111,7 @@
     },
     {
       "name": "Python: MLM Torch (no trainer)",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_mlm_torch_no_trainer",
       "justMyCode": false,
@@ -127,7 +127,7 @@
     },
     {
       "name": "Python: T5 MLM Torch 2",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_t5_mlm_torch_2",
       "justMyCode": false,
@@ -148,7 +148,7 @@
     },
     {
       "name": "Python: T5 MLM Torch Booru",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.run_t5_mlm_torch_booru",
       "justMyCode": false,
@@ -274,7 +274,7 @@
     },
     {
       "name": "Python: Test checkpoint",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.test_checkpoint",
       "justMyCode": false,
@@ -288,21 +288,21 @@
     },
     {
       "name": "Python: Loss benchmark",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.loss_bench",
       "justMyCode": false
     },
     {
       "name": "Python: Attn bench",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.attn_bench",
       "justMyCode": false
     },
     {
       "name": "Python: Pack dataset",
-      "type": "python",
+      "type": "debugpy",
       "request": "launch",
       "module": "script.pack_dataset",
       "justMyCode": false
