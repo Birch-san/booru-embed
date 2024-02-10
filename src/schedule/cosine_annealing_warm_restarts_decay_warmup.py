@@ -62,11 +62,11 @@ class CosineAnnealingWarmRestartsDecayWarmup(CosineAnnealingWarmRestartsDecay):
     T_0: int,
     warmup: int,
     warmup_start_factor: float,
-    T_mult=1,
-    eta_min=0,
-    last_epoch=-1,
-    verbose=False,
-    decay=1,
+    T_mult: int = 1,
+    eta_min: float = 0.,
+    last_epoch: int = -1,
+    verbose = False,
+    decay: float = 1.,
   ):
     self.warmup = warmup
     self.warmup_start_factor = warmup_start_factor

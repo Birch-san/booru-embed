@@ -70,7 +70,8 @@ from transformers.utils.versions import require_version
 from transformers.utils.import_utils import _is_package_available
 
 from src.create_optimizer import create_optimizer
-from src.create_schedule import get_inverse_sqrt_schedule
+from src.create_schedule import get_inverse_sqrt_schedule, get_cosine_annealing_warm_restarts_decay_with_warmup_schedule, get_cosine_annealing_with_warmup_schedule
+from src.schedule.cosine_annealing_warm_restarts_decay_warmup import CosineAnnealingWarmRestartsDecayWarmup
 from src.optimizer_and_scheduler import OptimizerAndScheduler
 from src.get_amp_context import get_amp_context
 from src.vocab import Vocab
@@ -289,6 +290,10 @@ class MyTrainingArguments:
     use_lars: bool = field(default=False, metadata={"help": "wrap optimizer in LARS"})
     sgd_momentum: float = field(default=0, metadata={"help": "momentum for SGD optimizer, if used"})
     measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
+    custom_lr_scheduler_type: str = field(default=None, metadata={"help": 'Instead of the HF choices, use our own LR schedule.', 'choices': ['cosine_warmup', 'cosine_warmup_restart_decay', 'inverse_sqrt']})
+    cosine_sched_eta_min: float = field(default=1e-5, metadata={"help": 'For CosineAnnealing schedules: the low apex of the cosine.'})
+    cosine_sched_restart_decay: float = field(default=.95, metadata={"help": 'For CosineAnnealingWarmRestartsDecay schedules: the decay.'})
+    cosine_sched_restart_t_mult: int = field(default=2, metadata={"help": 'For CosineAnnealingWarmRestartsDecay schedules: the T_mult.'})
     log_flops: bool = field(default=False, metadata={"help": 'Prints to console the measured FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     log_memory: bool = field(default=False, metadata={"help": 'Measures your VRAM usage during on_step_end (i.e. after gradient accumulation).'})
     log_every_n_steps: int = field(default=5, metadata={"help": "Trainer callback only gives us FLOs if we log. logging isn't free; try not to do it every step"})
@@ -653,14 +658,36 @@ def main():
     if my_training_args.use_lars:
         optimizer = LARS(optimizer)
     
-    if training_args.lr_scheduler_type == 'inverse_sqrt':
+    if my_training_args.custom_lr_scheduler_type is not None:
         assert optimizer is not None
         max_steps: int = len(train_dataset)//training_args.per_device_train_batch_size
         num_warmup_steps: int = training_args.get_warmup_steps(max_steps)
-        schedule: LambdaLR = get_inverse_sqrt_schedule(
-            optimizer=optimizer,
-            num_warmup_steps=num_warmup_steps,
-        )
+        match(my_training_args.custom_lr_scheduler_type):
+            case 'inverse_sqrt':
+                schedule: LambdaLR = get_inverse_sqrt_schedule(
+                    optimizer=optimizer,
+                    num_warmup_steps=num_warmup_steps,
+                )
+            case 'cosine_warmup':
+                schedule: CosineAnnealingWarmRestartsDecayWarmup = get_cosine_annealing_with_warmup_schedule(
+                    optimizer=optimizer,
+                    num_warmup_steps=num_warmup_steps,
+                    total_steps=max_steps,
+                    eta_min=my_training_args.cosine_sched_eta_min,
+                    warmup_start_factor=training_args.warmup_ratio,
+                )
+            case 'cosine_warmup_restart_decay':
+                schedule: CosineAnnealingWarmRestartsDecayWarmup = get_cosine_annealing_warm_restarts_decay_with_warmup_schedule(
+                    optimizer=optimizer,
+                    num_warmup_steps=num_warmup_steps,
+                    T_0=max_steps,
+                    eta_min=my_training_args.cosine_sched_eta_min,
+                    decay=my_training_args.cosine_sched_restart_decay,
+                    warmup_start_factor=training_args.warmup_ratio,
+                    T_mult=training_args.cosine_sched_restart_t_mult,
+                )
+            case _:
+                raise ValueError(f"Never heard of custom_lr_scheduler_type '{my_training_args.custom_lr_scheduler_type}'.")
     else:
         schedule: Optional[LambdaLR] = None
 

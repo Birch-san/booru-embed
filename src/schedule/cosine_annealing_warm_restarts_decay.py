@@ -1,5 +1,6 @@
 import math
 from typing import Optional, List
+from torch.optim import Optimizer
 from .cosine_annealing_warm_restarts_patched_subclass import CosineAnnealingWarmRestartsFixedProbably
 
 # by Noxel, under CC BY-SA 4.0 license
@@ -36,13 +37,13 @@ class CosineAnnealingWarmRestartsDecay(CosineAnnealingWarmRestartsFixedProbably)
   initial_lrs: List[float]
   def __init__(
     self,
-    optimizer,
+    optimizer: Optimizer,
     T_0: int,
-    T_mult=1,
-    eta_min=0.,
-    last_epoch = -1,
-    verbose=False,
-    decay=1.,
+    T_mult: int = 1,
+    eta_min: float = 0.,
+    last_epoch: int = -1,
+    verbose = False,
+    decay: float = 1.,
   ):
     self.decay = decay
     super().__init__(

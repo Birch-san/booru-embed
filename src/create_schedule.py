@@ -1,6 +1,7 @@
 from torch.optim import Optimizer
 from functools import partial
 from torch.optim.lr_scheduler import LambdaLR
+from .schedule.cosine_annealing_warm_restarts_decay_warmup import CosineAnnealingWarmRestartsDecayWarmup
 
 def _get_inverse_sqrt_schedule_lr_lambda(current_step: int, *, num_warmup_steps: int, timescale: int = None):
     lr: float = max(current_step, num_warmup_steps)**-.5
@@ -9,7 +10,7 @@ def _get_inverse_sqrt_schedule_lr_lambda(current_step: int, *, num_warmup_steps:
 
 def get_inverse_sqrt_schedule(
     optimizer: Optimizer, num_warmup_steps: int, timescale: int = None, last_epoch: int = -1
-):
+) -> LambdaLR:
     """
     Create a schedule with an inverse square-root learning rate, from the initial lr set in the optimizer, after a
     warmup period which increases lr linearly from 0 to the initial lr set in the optimizer.
@@ -35,3 +36,37 @@ def get_inverse_sqrt_schedule(
 
     lr_lambda = partial(_get_inverse_sqrt_schedule_lr_lambda, num_warmup_steps=num_warmup_steps, timescale=timescale)
     return LambdaLR(optimizer, lr_lambda, last_epoch=last_epoch)
+
+def get_cosine_annealing_warm_restarts_decay_with_warmup_schedule(
+    optimizer: Optimizer, num_warmup_steps: int, T_0: int, eta_min: float, last_epoch: int = -1,
+    decay: float = .95, warmup_start_factor: float = 0.,
+    T_mult: int = 2,
+) -> CosineAnnealingWarmRestartsDecayWarmup:
+    return CosineAnnealingWarmRestartsDecayWarmup(
+        optimizer=optimizer,
+        eta_min=eta_min,
+        warmup=num_warmup_steps,
+        warmup_start_factor=warmup_start_factor,
+        T_0=T_0,
+        T_mult=T_mult,
+        decay=decay,
+        last_epoch=last_epoch,
+    )
+
+def get_cosine_annealing_with_warmup_schedule(
+    optimizer: Optimizer, num_warmup_steps: int, total_steps: int, eta_min: float, last_epoch: int = -1,
+    warmup_start_factor: float = 0.,
+) -> CosineAnnealingWarmRestartsDecayWarmup:
+    # whilst it would be simpler to express this as SequentialLR(LinearLR(), CosineAnnealingLR()),
+    # I found that those do not tolerate resuming training correctly.
+    # so we express a very similar schedule using my far-more-complicated but resumption-tested schedule
+    return CosineAnnealingWarmRestartsDecayWarmup(
+        optimizer=optimizer,
+        warmup=num_warmup_steps,
+        warmup_start_factor=warmup_start_factor,
+        eta_min=eta_min,
+        T_0=total_steps-num_warmup_steps+1,
+        T_mult=1,
+        decay=.001,
+        last_epoch=last_epoch,
+    )
