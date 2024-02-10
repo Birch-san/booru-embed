@@ -1,17 +1,33 @@
 from transformers import TrainingArguments, Trainer
+from transformers.training_args import TrainingArguments
 from transformers.trainer_pt_utils import get_parameter_names
 from transformers.pytorch_utils import ALL_LAYERNORM_LAYERS
 from logging import getLogger
 from torch import nn
-from torch.optim import Optimizer
-from typing import Set
+from torch.optim import Optimizer, SGD
+from typing import Set, Dict, Any, Optional
+from .optim.adamw_scale import AdamWScale
+from .optim.sgd_kwargs import SGDKwargs
 logger = getLogger(__name__)
 
 from src.model.modeling_t5_booru import T5BooruForMaskedLM
 
+def get_optim_kwargs(args: TrainingArguments) -> Dict[str, Any]:
+    optimizer_kwargs: Dict[str, Any] = {"lr": args.learning_rate}
+    return optimizer_kwargs
+
+def get_adam_kwargs(args: TrainingArguments) -> Dict[str, Any]:
+    adam_kwargs: Dict[str, Any] = {
+        "betas": (args.adam_beta1, args.adam_beta2),
+        "eps": args.adam_epsilon,
+    }
+    return adam_kwargs
+
 def create_optimizer(
     model: T5BooruForMaskedLM,
     train_args: TrainingArguments,
+    sgd_kwargs: Optional[SGDKwargs] = None,
+    prefer_rms = False,
 ) -> Optimizer:
     """
     Setup the optimizer.
@@ -45,7 +61,24 @@ def create_optimizer(
         },
     ]
 
-    optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(train_args)
+    if train_args.optim == 'sgd':
+        assert sgd_kwargs is not None
+        optimizer_cls = SGD
+        optimizer_kwargs: Dict[str, Any] = {
+            'lr': train_args.learning_rate,
+            'momentum': sgd_kwargs['sgd_momentum'],
+            'weight_decay': train_args.weight_decay,
+        }
+        # TODO: work out how to decay LARS+SGD by param group
+    else:
+        if train_args.optim == 'adamw_hf' and prefer_rms:
+            optimizer_cls = AdamWScale
+            optimizer_kwargs: Dict[str, Any] = {
+                **get_optim_kwargs(train_args),
+                **get_adam_kwargs(train_args),
+            }
+        else:
+            optimizer_cls, optimizer_kwargs = Trainer.get_optimizer_cls_and_kwargs(train_args)
 
     optimizer = optimizer_cls(optimizer_grouped_parameters, **optimizer_kwargs)
     if optimizer_cls.__name__ == "Adam8bit":

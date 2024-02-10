@@ -36,7 +36,7 @@ from numpy.typing import NDArray
 from functools import partial
 import torch
 from torch import LongTensor
-from torch.optim import Optimizer, SGD
+from torch.optim import Optimizer
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data.dataloader import DataLoader
 from torch.utils.data.sampler import RandomSampler
@@ -98,6 +98,7 @@ from src.trainer_callbacks.log_every_n_steps_callback import LogEveryNStepsCallb
 from src.nvml_service import NvmlService
 from src.ceil_to_multiple import remaining_to_multiple
 from src.booru_collator import BooruBatchData
+from src.optim.sgd_kwargs import SGDKwargs
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.32.0.dev0")
@@ -288,6 +289,7 @@ class SysArguments:
 @dataclass
 class MyTrainingArguments:
     use_lars: bool = field(default=False, metadata={"help": "wrap optimizer in LARS"})
+    prefer_rms: bool = field(default=False, metadata={"help": "use AdamScale when optim is set to adam_hf"})
     sgd_momentum: float = field(default=0, metadata={"help": "momentum for SGD optimizer, if used"})
     measure_flops: bool = field(default=False, metadata={"help": 'Measures FLOPs (FLOs incurred between on_step_begin and on_step_end).'})
     custom_lr_scheduler_type: str = field(default=None, metadata={"help": 'Instead of the HF choices, use our own LR schedule.', 'choices': ['cosine_warmup', 'cosine_warmup_restart_decay', 'inverse_sqrt']})
@@ -638,22 +640,8 @@ def main():
             max_train_samples = min(len(train_dataset), data_args.max_train_samples)
             train_dataset = train_dataset.select(range(max_train_samples))
 
-    if training_args.optim == 'sgd':
-        # lololol
-        optimizer = SGD(
-            model.parameters(),
-            lr=training_args.learning_rate,
-            momentum=my_training_args.sgd_momentum,
-            weight_decay=training_args.weight_decay,
-        )
-        # TODO:
-        #   work out how to decay by param group
-        #   use Apple's lr schedule
-        #   check again how Adam behaves with a higher LR
-        #   evaluate task performance
-        #   try running out-batch_128_sreparam_all_lars_1e-1
-    else:
-        optimizer: Optimizer = create_optimizer(model, training_args)
+    sgd_kwargs = SGDKwargs(momentum=my_training_args.sgd_momentum)
+    optimizer: Optimizer = create_optimizer(model, training_args, sgd_kwargs=sgd_kwargs, prefer_rms=my_training_args.prefer_rms)
     
     if my_training_args.use_lars:
         optimizer = LARS(optimizer)
