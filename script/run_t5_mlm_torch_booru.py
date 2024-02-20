@@ -535,6 +535,10 @@ def main():
     embedding_size = model.get_input_embeddings().weight.shape[0]
     if len(vocab.tokens) > embedding_size:
         model.resize_token_embeddings(len(vocab.tokens))
+    
+    device = torch.device('cuda')
+    # move model to device before we create optimizer, so that we can use optimizers such as adamw_torch_fused
+    model = model.to(device)
 
     if model_args.actual_t5:
         tokenizer_name: Optional[str] = model_args.tokenizer_name or model_args.model_name_or_path
@@ -551,8 +555,6 @@ def main():
         assert isinstance(config, T5BooruConfig)
         config_max_ctx_len: int = config.max_ctx_len
     max_seq_length: int = min(data_args.max_seq_length or config_max_ctx_len, config_max_ctx_len)
-    
-    device = torch.device('cuda')
 
     script_dir = Path(dirname(realpath(__file__)))
     repo_root: Path = script_dir.parent
