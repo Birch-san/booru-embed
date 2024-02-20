@@ -19,13 +19,15 @@ import copy
 import math
 import os
 import warnings
-from typing import Optional, Tuple, Union, Callable, NamedTuple, List
+from typing import Optional, Tuple, Union, Callable, NamedTuple, Sequence, List
 
 import torch
 from torch import nn, FloatTensor, LongTensor, ShortTensor
 from torch.nn import CrossEntropyLoss, Conv1d, Embedding, Linear, Parameter
 from torch.nn.functional import scaled_dot_product_attention, pad, conv1d
 from torch.utils.checkpoint import checkpoint
+from torch.nn import functional as F
+from functools import reduce
 
 from transformers.activations import ACT2FN
 from transformers.modeling_outputs import (
@@ -54,6 +56,7 @@ from .sigma_reparam import SReparam, SReparamSupportedModule
 from ..vocab import Vocab
 from ..z_loss import ZLoss
 from ..ceil_to_multiple import remaining_to_multiple, ceil_to_multiple
+from .compile_wrap import compile_wrap
 
 
 logger = logging.get_logger(__name__)
@@ -277,6 +280,25 @@ class T5BooruLayerNorm(nn.Module):
         return self.weight * hidden_states
 
 
+@compile_wrap
+def rms_norm(x: FloatTensor, scale: FloatTensor, eps: float) -> FloatTensor:
+    dtype = reduce(torch.promote_types, (x.dtype, scale.dtype, torch.float32))
+    mean_sq = torch.mean(x.to(dtype)**2, dim=-1, keepdim=True)
+    scale = scale.to(dtype) * torch.rsqrt(mean_sq + eps)
+    return x * scale.to(x.dtype)
+
+class RMSNorm(nn.Module):
+    def __init__(self, shape: Sequence[int], eps=1e-6):
+        super().__init__()
+        self.eps = eps
+        self.scale = nn.Parameter(torch.ones(shape))
+
+    def extra_repr(self):
+        return f"shape={tuple(self.scale.shape)}, eps={self.eps}"
+
+    def forward(self, x: FloatTensor) -> FloatTensor:
+        return rms_norm(x, self.scale, self.eps)
+
 try:
     from apex.normalization import FusedRMSNorm
 
@@ -289,6 +311,8 @@ except ImportError:
 except Exception:
     logger.warning("discovered apex but it failed to load, falling back to T5BooruLayerNorm")
     pass
+
+# T5BooruLayerNorm = RMSNorm
 
 ALL_LAYERNORM_LAYERS.append(T5BooruLayerNorm)
 
@@ -370,19 +394,80 @@ class T5BooruDenseGatedActDense(nn.Module):
         hidden_states = self.wo(hidden_states)
         return hidden_states
 
+@compile_wrap
+def linear_geglu(x: FloatTensor, weight: FloatTensor, bias: Optional[FloatTensor]=None) -> FloatTensor:
+    x = x @ weight.mT
+    if bias is not None:
+        x = x + bias
+    x, gate = x.chunk(2, dim=-1)
+    return x * F.gelu(gate)
+
+@compile_wrap
+def linear_swiglu(x: FloatTensor, weight: FloatTensor, bias: Optional[FloatTensor]=None) -> FloatTensor:
+    x = x @ weight.mT
+    if bias is not None:
+        x = x + bias
+    x, gate = x.chunk(2, dim=-1)
+    return x * F.silu(gate)
+
+class LinearGEGLU(nn.Linear):
+    def __init__(self, in_features: int, out_features: int, bias=True):
+        super().__init__(in_features, out_features * 2, bias=bias)
+        self.out_features = out_features
+
+    def forward(self, x: FloatTensor) -> FloatTensor:
+        return linear_geglu(x, self.weight, self.bias)
+
+class LinearSwiGLU(nn.Linear):
+    def __init__(self, in_features: int, out_features: int, bias=True):
+        super().__init__(in_features, out_features * 2, bias=bias)
+        self.out_features = out_features
+
+    def forward(self, x: FloatTensor) -> FloatTensor:
+        return linear_swiglu(x, self.weight, self.bias)
+
+def zero_init(layer):
+    nn.init.zeros_(layer.weight)
+    if layer.bias is not None:
+        nn.init.zeros_(layer.bias)
+    return layer
+
+class ActDropDense(nn.Module):
+    def __init__(self, d_model: int, d_ff: int, dropout=0.0, up_proj_ctor: Union[LinearGEGLU, LinearSwiGLU]=LinearSwiGLU, up_bias=False, down_bias=False):
+        super().__init__() 
+        self.up_proj = up_proj_ctor(d_model, d_ff, bias=up_bias)
+        self.dropout = nn.Dropout(dropout)
+        self.down_proj = zero_init(Linear(d_ff, d_model, bias=down_bias))
+
+    def forward(self, x: FloatTensor) -> FloatTensor:
+        x = self.up_proj(x)
+        x = self.dropout(x)
+        x = self.down_proj(x)
+        return x
 
 class T5BooruLayerFF(nn.Module):
     def __init__(self, config: T5BooruConfig):
         super().__init__()
-        if config.is_gated_act:
-            self.DenseReluDense = T5BooruDenseGatedActDense(config)
-        else:
-            self.DenseReluDense = T5BooruDenseActDense(config)
+        match config.feed_forward_proj:
+            case 'gated-gelu':
+                ln_ctor = T5BooruLayerNorm
+                self.DenseReluDense = T5BooruDenseGatedActDense(config)
+            case 'gelu':
+                ln_ctor = T5BooruLayerNorm
+                self.DenseReluDense = T5BooruDenseActDense(config)
+            case 'geglu' | 'swiglu':
+                ln_ctor = T5BooruLayerNorm
+                # plays better with torch.compile than apex's FusedRMSNorm
+                # ln_ctor = RMSNorm
+                up_proj_ctor = LinearGEGLU if config.feed_forward_proj == 'geglu' else LinearSwiGLU
+                self.DenseReluDense = ActDropDense(config.d_model, config.d_ff, dropout=config.dropout_rate, up_proj_ctor=up_proj_ctor, up_bias=False, down_bias=False)
+            case _:
+                raise ValueError(f'Unimplemented feed_forward_proj "{config.feed_forward_proj}".')
 
-        self.layer_norm = T5BooruLayerNorm(config.d_model, eps=config.layer_norm_epsilon)
+        self.layer_norm = ln_ctor(config.d_model, eps=config.layer_norm_epsilon)
         self.dropout = nn.Dropout(config.dropout_rate)
 
-    def forward(self, hidden_states):
+    def forward(self, hidden_states: FloatTensor) -> FloatTensor:
         forwarded_states = self.layer_norm(hidden_states)
         forwarded_states = self.DenseReluDense(forwarded_states)
         hidden_states = hidden_states + self.dropout(forwarded_states)
