@@ -1,9 +1,7 @@
-from typing import List, Optional
-import torch
-from torch import IntTensor, bucketize, tensor
+from typing import List, Optional, Dict, Literal
 from os import makedirs
 from os.path import join
-from tqdm import tqdm
+from tqdm import tqdm, trange
 import numpy as np
 from numpy.typing import NDArray
 
@@ -12,87 +10,82 @@ from src.tokenizer import make_tsv_record_to_token_ids, TsvRecordToTokenIds
 
 vocab = Vocab()
 # create this file by running scripts/make_tokenizer.py
-with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
+with open('out_tokenizer_2024_02/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
   vocab.load(vocab_in)
 
 # check we're safe to save the dataset in int16
 assert len(vocab.tokens) < (1 << 15)
 
-# determined via analysis of k-means (k=20) clusters over 5.7mill Danbooru captions.
-# *means* were:
-# [17, 36, 55, 73, 92, 111, 129, 148, 167, 185, 204, 223, 241]
-# we don't quite want means, because overflowing a bucket means shedding labels.
-# we don't know the variance around each mean to know a good upper bound for each bucket
-# so let's just go with the midpoint to the next bucket
-#   t = torch.tensor([17, 36, 55, 73, 92, 111, 129, 148, 167, 185, 204, 223, 241], dtype=torch.int32)
-#   t[:-1] + (t.diff()/2).int()
-# let's round the final up to 255
-# buckets: IntTensor = tensor([26,  45,  64,  82, 101, 120, 138, 157, 176, 194, 213, 232, 255], dtype=torch.int16)
-# actually I have no idea how to make HF dataloader source batches from a variety of buckets, so let's give up on ctx-len bucketing ¬_¬
-buckets: IntTensor = tensor([255], dtype=torch.int16)
-max_tokens: int = buckets.max().item()
-
+max_tokens = 255
 tsv_record_to_token_ids: TsvRecordToTokenIds = make_tsv_record_to_token_ids(vocab, do_shuffle=True, max_tokens=max_tokens, statistics=None)
 
-out_dir = 'out_onebucket'
+out_dir = 'out_onebucket_2024_02'
 makedirs(out_dir, exist_ok=True)
 
-value_buckets: List[List[NDArray]] = [[] for _ in buckets]
-# index_buckets: List[List[int]] = [[0] for _ in buckets]
-length_buckets: List[List[int]] = [[] for _ in buckets]
+value_arrs: Dict[Literal['train', 'test'], List[NDArray]] = {'train': [], 'test': []}
+length_arrs: Dict[Literal['train', 'test'], List[int]] = {'train': [], 'test': []}
 
 # this is just for testing
 # target_count = 100
 
-with open('/Users/birch/machine-learning/danbooru-bigquery-2023-08/danbooru-captions.tsv', mode='r', encoding='utf-8') as f:
-  # skip header line
-  next(f)
-  samples_estimate = 5770089
-  for line in tqdm(f, total=samples_estimate, unit=f'caption'):
-    stripped: str = line.rstrip('\n')
-    token_ids: Optional[List[int]] = tsv_record_to_token_ids(stripped)
-    if token_ids is None:
-      continue
-    # print([vocab.tokens[token_id] for token_id in token_ids])
-    
-    token_len: int = len(token_ids)
-    bucket_ix: int = bucketize(token_len, buckets, out_int32=True).item()
+test_split_quotient = .002 # gives us about 10k samples
+train_epochs = 2
 
-    value_bucket: List[NDArray] = value_buckets[bucket_ix]
-    # index_bucket: List[int] = index_buckets[bucket_ix]
-    length_bucket: List[int] = length_buckets[bucket_ix]
+in_tsv = '/Users/birch/machine-learning/danbooru-bigquery-2024-02/danbooru-captions.tsv'
 
-    token_ids_n: NDArray = np.array(token_ids, np.int16)
-    value_bucket.append(token_ids_n)
-    # index_bucket.append(index_bucket[-1] + token_len)
-    length_bucket.append(token_len)
+with open(in_tsv) as f:
+  sample_count: int = sum(1 for _ in f)-1
 
-    # target_count -= 1
-    # if target_count == 0:
-    #   break
-    pass
+train_test_cutoff = int(sample_count*(1-test_split_quotient))
 
-# for bucket, value_bucket, index_bucket in zip(buckets, value_buckets, index_buckets):
-for bucket, value_bucket, length_bucket in zip(buckets, value_buckets, length_buckets):
-  if not value_bucket:
-    continue
-  print(f'saving bucket {bucket.item()}..')
-  # assert len(index_bucket)-1 == len(value_bucket)
-  assert len(length_bucket) == len(value_bucket)
-  values: NDArray = np.concatenate(value_bucket, axis=-1)
-  # indices: NDArray = np.array(index_bucket[:-1], dtype=np.int16)
-  lengths: NDArray = np.array(length_bucket, dtype=np.int16)
+for epoch in trange(0, train_epochs, unit=f'epoch', position=0):
+  with open('/Users/birch/machine-learning/danbooru-bigquery-2024-02/danbooru-captions.tsv', mode='r', encoding='utf-8') as f:
+    # skip header line
+    next(f)
+    for line_ix, line in enumerate(tqdm(f, total=sample_count, unit=f'caption', position=1)):
+      stripped: str = line.rstrip('\n')
+      token_ids: Optional[List[int]] = tsv_record_to_token_ids(stripped)
+      if token_ids is None:
+        continue
+      # print([vocab.tokens[token_id] for token_id in token_ids])
 
-  # you can compute indices from lengths. faster way to do this is to roll + assign a 0, but:
-  # indices: NDArray = np.pad(lengths, (1, 0)).cumsum()[:-1]
+      train_test_key = 'test' if line_ix > train_test_cutoff else 'train'
+      if train_test_key == 'test' and epoch > 0:
+        # we don't need multiple epochs for test data
+        break
 
-  bucket_dir: str = join(out_dir, f'b{bucket.item()}')
-  makedirs(bucket_dir, exist_ok=True)
+      value_arr: List[NDArray] = value_arrs[train_test_key]
+      length_arr: List[int] = length_arrs[train_test_key]
+      
+      token_len: int = len(token_ids)
 
-  out_values: str = join(bucket_dir, 'values.npy')
-  # out_indices: str = join(bucket_dir, 'indices.npy')
-  out_lengths: str = join(bucket_dir, 'lengths.npy')
+      token_ids_n: NDArray = np.array(token_ids, np.int16)
+      value_arr.append(token_ids_n)
+      length_arr.append(token_len)
+
+      # target_count -= 1
+      # if target_count == 0:
+      #   break
+      pass
+
+for split in ['train', 'test']:
+  print(f'saving split {split}..')
+  value_arr: List[NDArray] = value_arrs[train_test_key]
+  length_arr: List[int] = length_arrs[train_test_key]
+  assert len(length_arr) == len(value_arr)
+  values: NDArray = np.concatenate(value_arr, axis=-1)
+  lengths: NDArray = np.array(length_arr, dtype=np.int16)
+
+  # compute indices from lengths
+  indices: NDArray = np.pad(lengths, (1, 0)).cumsum(dtype=np.int32)
+
+  split_dir: str = join(out_dir, split)
+  makedirs(split_dir, exist_ok=True)
+
+  out_values: str = join(split_dir, 'values.npy')
+  out_indices: str = join(split_dir, 'indices.npy')
+  out_lengths: str = join(split_dir, 'lengths.npy')
   
   np.save(out_values, values, allow_pickle=False)
-  # np.save(out_indices, indices, allow_pickle=False)
+  np.save(out_indices, indices, allow_pickle=False)
   np.save(out_lengths, lengths, allow_pickle=False)
