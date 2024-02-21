@@ -39,7 +39,7 @@ with open(in_tsv) as f:
 train_test_cutoff = int(sample_count*(1-test_split_quotient))
 
 for epoch in trange(0, train_epochs, unit=f'epoch', position=0):
-  with open('/Users/birch/machine-learning/danbooru-bigquery-2024-02/danbooru-captions.tsv', mode='r', encoding='utf-8') as f:
+  with open(in_tsv, mode='r', encoding='utf-8') as f:
     # skip header line
     next(f)
     for line_ix, line in enumerate(tqdm(f, total=sample_count, unit=f'caption', position=1)):
@@ -70,8 +70,8 @@ for epoch in trange(0, train_epochs, unit=f'epoch', position=0):
 
 for split in ['train', 'test']:
   print(f'saving split {split}..')
-  value_arr: List[NDArray] = value_arrs[train_test_key]
-  length_arr: List[int] = length_arrs[train_test_key]
+  value_arr: List[NDArray] = value_arrs[split]
+  length_arr: List[int] = length_arrs[split]
   assert len(length_arr) == len(value_arr)
   values: NDArray = np.concatenate(value_arr, axis=-1)
   lengths: NDArray = np.array(length_arr, dtype=np.int16)
