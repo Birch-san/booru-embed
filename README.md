@@ -75,11 +75,17 @@ But a more performant program is [tsv-utils](https://github.com/eBay/tsv-utils)'
 head -n 2 bq-results-20230520-201605-1684613827694.csv | csv2tsv
 ```
 
+Convert all csvs into a single tsv:
+
+```bash
+csv2tsv -H *.csv > danbooru-captions.tsv
+```
+
 Then we can use awk to count tag occurrences, and print a sorted list.  
 
-### Counting word prevalance
+### [Deprecated] Counting word prevalence
 
-Modify the `*.csv` wildcard in `word-prevalence.sh` to be in the directory where you saved out Danbooru CSVs, then run:
+Modify `word-prevalence.sh` to read danbooru-captions.tsv from the location you saved it to, then run:
 
 ```bash
 ./shell/split-word-prevalence.sh > out/split-word-prevalence.txt
@@ -96,6 +102,12 @@ cut -d' ' -f 2 out/split-word-prevalence.txt > out/split-word-prevalence.nocount
 ```
 
 Once we've decided on a vocab list, we can move to the next step:
+
+### Counting word prevalence by category
+
+```bash
+./shell/split-word-prevalence-category.sh
+```
 
 ## Processing the csv for fast dataloading
 
