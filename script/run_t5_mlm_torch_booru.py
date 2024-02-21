@@ -112,6 +112,7 @@ _xformers_available: bool = _is_package_available('xformers')
 MODEL_CONFIG_CLASSES = list(MODEL_FOR_MASKED_LM_MAPPING.keys())
 MODEL_TYPES = tuple(conf.model_type for conf in MODEL_CONFIG_CLASSES)
 
+Splits = Literal['train', 'test']
 
 @dataclass
 class ModelArguments:
@@ -559,7 +560,7 @@ def main():
     script_dir = Path(dirname(realpath(__file__)))
     repo_root: Path = script_dir.parent
     # populate this folder by running tsv_bucketer.py
-    in_dir: Path = repo_root / 'out_onebucket_2024_02'
+    in_dir: Path = repo_root / 'out_dataset_2024_02'
 
     ragged_arrs: Dict[Splits, BucketContent] = {}
     splits = ['train', 'test']

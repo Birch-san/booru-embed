@@ -19,7 +19,7 @@ assert len(vocab.tokens) < (1 << 15)
 max_tokens = 255
 tsv_record_to_token_ids: TsvRecordToTokenIds = make_tsv_record_to_token_ids(vocab, do_shuffle=True, max_tokens=max_tokens, statistics=None)
 
-out_dir = 'out_onebucket_2024_02'
+out_dir = 'out_dataset_2024_02'
 makedirs(out_dir, exist_ok=True)
 
 value_arrs: Dict[Literal['train', 'test'], List[NDArray]] = {'train': [], 'test': []}
