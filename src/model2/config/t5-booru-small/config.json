@@ -44,6 +44,6 @@
   "use_sigma_reparam": false,
   "use_attn_pre_ln": true,
   "use_attn_post_ln": false,
-  "vocab_size_nominal": 32170,
+  "vocab_size_nominal": 32194,
   "pad_vocab_to_multiple": 8
 }

@@ -461,7 +461,7 @@ def main():
     # TODO: make a BooruTokenizer class, with an interface a bit more typical of transformers Tokenizers
     vocab = Vocab()
     # create this file by running scripts/make_tokenizer.py
-    with open('out_tokenizer/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
+    with open('out_tokenizer_2024_02/vocab.txt', mode='r', encoding='utf-8') as vocab_in:
         vocab.load(vocab_in)
     if not model_args.actual_t5:
         assert config.vocab_size_nominal == len(vocab.tokens), f"config.vocab_size_nominal != len(vocab.tokens) ({config.vocab_size_nominal} != {len(vocab.tokens)}). we will construct model's Embedding from config, and we will want all the tokenizer's tokens represented in the Embedding."
@@ -559,79 +559,41 @@ def main():
     script_dir = Path(dirname(realpath(__file__)))
     repo_root: Path = script_dir.parent
     # populate this folder by running tsv_bucketer.py
-    # we used to group prompts into buckets by nearest length,
-    # but since it seems hard to make HF dataloader source batch content from alike buckets:
-    # we've switched to just "everything in the same bucket, <=255 length"
-    # in_dir = repo_root.joinpath('out_lenbucket')
-    in_dir = repo_root.joinpath('out_onebucket')
+    in_dir: Path = repo_root / 'out_onebucket_2024_02'
 
-    potential_bucket_dirs: List[str] = listdir(in_dir)
-    bucket_values: List[int] = [int(dir.lstrip('b')) for dir in potential_bucket_dirs if bool(re.fullmatch(r'b[0-9]+', dir))]
-    bucket_values.sort()
-    bucket_dirs: List[str] = [join(in_dir, f'b{val}') for val in bucket_values]
-
-    bucket_samples_train: Dict[int, BucketContent] = {}
-    bucket_samples_test: Dict[int, BucketContent] = {}
-
-    def get_indices(lengths: NDArray) -> NDArray:
-        indices: LongTensor = torch.from_numpy(lengths).to(device=device, dtype=torch.long)
-        indices.cumsum_(0)
-        indices.resize_(indices.shape[0]+1)
-        indices = indices.roll(1)
-        return indices.cpu().numpy()
-
-    train_test_split = data_args.validation_split_percentage/100
-    # for testing
-    sample_limit_per_bucket: Optional[int] = None if data_args.max_train_samples is None else (
-        int(data_args.max_train_samples/(1-train_test_split))
-    )
-    for bucket_value, bucket_dir in zip(bucket_values, bucket_dirs):
-        values: NDArray = np.load(join(bucket_dir, 'values.npy'))
-        lengths: NDArray = np.load(join(bucket_dir, 'lengths.npy'))
-        samples_to_take = lengths.shape[0] if sample_limit_per_bucket is None else min(lengths.shape[0], sample_limit_per_bucket)
-
-        lengths = lengths[:samples_to_take]
-        train_start_ix = int(samples_to_take * train_test_split)
-
-        test_indices: NDArray = get_indices(lengths[:train_start_ix])
-        train_indices: NDArray = get_indices(lengths[train_start_ix:samples_to_take])
-        del lengths
-
-        bucket_samples_test[bucket_value] = BucketContent(
-            values = values[:test_indices[-1]],
-            indices = test_indices,
+    ragged_arrs: Dict[Splits, BucketContent] = {}
+    splits = ['train', 'test']
+    for split in splits:
+        split_dir: Path = in_dir / split
+        values: NDArray = np.load(str(split_dir / 'values.npy'), allow_pickle=False)
+        indices: NDArray = np.load(str(split_dir / 'indices.npy'), allow_pickle=False)
+        ragged_arrs[split] = BucketContent(
+            values = values,
+            indices = indices,
         )
-        bucket_samples_train[bucket_value] = BucketContent(
-            values = values[test_indices[-1]:test_indices[-1]+train_indices[-1]],
-            indices = train_indices,
-        )
-        del values, test_indices, train_indices
-        break # just peeking in first bucket for now (note: nowadays there's only one bucket anyway)
+    del values, indices
 
-    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_test[bucket_value].values[start:end]] for start, end in pairwise(bucket_samples_test[bucket_value].indices)]
-    # [[vocab.tokens[token_ix] for token_ix in bucket_samples_train[bucket_value].values[start:end]] for start, end in pairwise(bucket_samples_train[bucket_value].indices)]
+    # [[vocab.tokens[token_ix] for token_ix in ragged_arrs['test'].values[start:end]] for start, end in pairwise(ragged_arrs['test'].indices)]
+    # [[vocab.tokens[token_ix] for token_ix in ragged_arrs['train'].values[start:end]] for start, end in pairwise(ragged_arrs['train'].indices)]
 
     random_spans_noise_mask_: RandomSpansNoiseMask = partial(
         random_spans_noise_mask,
         noise_density=data_args.mlm_probability,
         mean_noise_span_length=data_args.mean_noise_span_length,
     )
-    train_dataset = BooruDataset(
-        bucket_content=bucket_samples_train[bucket_value],
-        random_spans_noise_mask=random_spans_noise_mask_,
-        # vocab is optional, to aid in debugging (enables decoding of a sample)
-        vocab=vocab,
-    )
-    test_dataset = BooruDataset(
-        bucket_content=bucket_samples_test[bucket_value],
-        random_spans_noise_mask=random_spans_noise_mask_,
-        # vocab is optional, to aid in debugging (enables decoding of a sample)
-        vocab=vocab,
-    )
-    del bucket_samples_train, bucket_samples_test
+
+    datasets_: Dict[Splits, BooruDataset] = {
+        split: BooruDataset(
+            bucket_content=ragged_arrs[split],
+            random_spans_noise_mask=random_spans_noise_mask_,
+            # vocab is optional, to aid in debugging (enables decoding of a sample)
+            vocab=vocab,
+        ) for split in splits
+    }
+
     tokenized_datasets = DatasetDict({
-        'train': train_dataset,
-        'validation': test_dataset,
+        'train': datasets_['train'],
+        'validation': datasets_['test'],
     })
 
     if training_args.do_train:
