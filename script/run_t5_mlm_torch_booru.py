@@ -589,6 +589,7 @@ def main():
             random_spans_noise_mask=random_spans_noise_mask_,
             # vocab is optional, to aid in debugging (enables decoding of a sample)
             vocab=vocab,
+            allow_masking_elem0=False,
         ) for split in splits
     }
 
