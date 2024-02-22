@@ -724,13 +724,13 @@ def main():
             callbacks.insert(0, SReparamCallback(amp_context=amp_context))
     if my_training_args.gen_every_n_steps:
         test_dataloader = DataLoader(
-            test_dataset,
+            datasets_['test'],
             collate_fn=data_collator,
             batch_size=my_training_args.per_device_gen_batch_size,
             num_workers=0,
             drop_last=False,
             pin_memory=True,
-            sampler=RandomSampler(test_dataset),
+            sampler=RandomSampler(datasets_['test']),
         )
         batches: Iterable[BooruBatchData] = test_dataloader
         amp_context: torch.cuda.amp.autocast | nullcontext = get_amp_context(training_args)
